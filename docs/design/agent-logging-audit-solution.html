@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Agent 请求记录与审计脱敏 · 技术方案</title>
+<style>
+  :root {
+    --bg: #f4f6fb;
+    --bg-soft: #edf0f8;
+    --card: #ffffff;
+    --card-border: #e4e8f2;
+    --ink: #1b2236;
+    --ink-2: #4b5568;
+    --ink-3: #8a93a8;
+    --primary: #4f46e5;
+    --primary-deep: #4338ca;
+    --primary-soft: #eef0fe;
+    --s1: #4f46e5;
+    --s2: #0d9488;
+    --s3: #e0592a;
+    --s1-soft: #eef0fe;
+    --s2-soft: #e4f6f3;
+    --s3-soft: #fdeee6;
+    --green: #15803d;
+    --green-soft: #e8f7ee;
+    --red: #dc2626;
+    --red-soft: #fdeeee;
+    --slate-soft: #eef1f6;
+    --slate-ink: #475569;
+    --code-bg: #0f172a;
+    --code-ink: #d7e0f0;
+    --code-key: #8fd3ff;
+    --fan-line: #c6cddc;
+    --shadow: 0 1px 2px rgba(23, 32, 64, .05), 0 10px 30px rgba(23, 32, 64, .07);
+    --radius: 16px;
+    --hero-grad: linear-gradient(135deg, #4338ca 0%, #6d28d9 55%, #9333ea 100%);
+    --chip-grad: linear-gradient(135deg, #4f46e5, #7c3aed);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1220;
+      --bg-soft: #141b2d;
+      --card: #161d30;
+      --card-border: #283049;
+      --ink: #e8ebf5;
+      --ink-2: #a8b1c6;
+      --ink-3: #7d879e;
+      --primary: #8b90ff;
+      --primary-deep: #a5a9ff;
+      --primary-soft: rgba(124, 127, 242, .16);
+      --s1: #8b90ff;
+      --s2: #2dd4bf;
+      --s3: #fb923c;
+      --s1-soft: rgba(124, 127, 242, .16);
+      --s2-soft: rgba(45, 212, 191, .13);
+      --s3-soft: rgba(251, 146, 60, .14);
+      --green: #4ade80;
+      --green-soft: rgba(74, 222, 128, .13);
+      --red: #f87171;
+      --red-soft: rgba(248, 113, 113, .12);
+      --slate-soft: rgba(148, 163, 184, .14);
+      --slate-ink: #b3bccc;
+      --code-bg: #0a0f1e;
+      --code-ink: #cdd7e8;
+      --code-key: #7dd3fc;
+      --fan-line: #36415c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px rgba(0, 0, 0, .35);
+      --chip-grad: linear-gradient(135deg, #6366f1, #8b5cf6);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1080px; margin: 0 auto; padding: 28px 24px 60px; }
+  section { scroll-margin-top: 24px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: .88em;
+    background: var(--slate-soft);
+    color: var(--ink);
+    border-radius: 5px;
+    padding: 1px 6px;
+  }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    position: relative;
+    overflow: hidden;
+    background: var(--hero-grad);
+    border-radius: 22px;
+    color: #fff;
+    padding: 42px 44px 38px;
+    box-shadow: 0 18px 50px rgba(79, 70, 229, .28);
+  }
+  .hero::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(600px 260px at 88% -10%, rgba(255, 255, 255, .22), transparent 65%),
+      radial-gradient(420px 220px at -6% 110%, rgba(56, 189, 248, .18), transparent 60%);
+    pointer-events: none;
+  }
+  .hero > * { position: relative; }
+  .hero h1 { margin: 0 0 10px; font-size: 30px; line-height: 1.3; letter-spacing: .5px; font-weight: 700; }
+  .hero .sub { margin: 0 0 20px; font-size: 15px; color: rgba(255, 255, 255, .82); }
+  .hero .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .hero .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 13px; border-radius: 999px;
+    background: rgba(255, 255, 255, .13);
+    border: 1px solid rgba(255, 255, 255, .28);
+    font-size: 13px; font-weight: 500; color: #fff;
+  }
+
+  /* ---------- TOC ---------- */
+  .toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 8px; }
+  .toc a {
+    font-size: 13px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 999px; padding: 5px 13px; box-shadow: var(--shadow);
+  }
+  .toc a:hover { color: var(--primary); text-decoration: none; border-color: var(--primary); }
+
+  /* ---------- Stats ---------- */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 22px 0 6px; }
+  .stat {
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px 20px 16px;
+  }
+  .stat .k { font-size: 13px; color: var(--ink-3); }
+  .stat .v {
+    font-size: 30px; font-weight: 700; letter-spacing: .5px;
+    background: var(--chip-grad);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    margin: 2px 0;
+  }
+  .stat .c { font-size: 12.5px; color: var(--ink-3); }
+
+  /* ---------- Sections ---------- */
+  .sec { margin-top: 42px; }
+  .sec-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .sec-no {
+    flex: none; width: 34px; height: 34px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--chip-grad); color: #fff;
+    font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+    box-shadow: 0 6px 16px rgba(99, 102, 241, .3);
+  }
+  .sec-head h2 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: .3px; }
+  .sec-intro { margin: 6px 0 18px; color: var(--ink-2); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+  }
+
+  /* ---------- Verdict ---------- */
+  .verdict { padding: 20px 24px; }
+  .verdict h3 { margin: 0 0 12px; font-size: 16px; }
+  .verdict ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 12px; }
+  .verdict li { display: flex; gap: 12px; align-items: flex-start; }
+  .verdict li svg { flex: none; margin-top: 3px; color: var(--green); }
+  .verdict li strong { font-weight: 650; }
+
+  /* ---------- Architecture ---------- */
+  .arch { display: flex; flex-direction: column; align-items: center; }
+  .node {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: 14px; box-shadow: var(--shadow); padding: 12px 22px;
+  }
+  .node .glyph {
+    flex: none; width: 38px; height: 38px; border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--slate-soft); color: var(--ink-2); font-size: 17px; font-weight: 650;
+  }
+  .node .nt { display: flex; flex-direction: column; line-height: 1.4; }
+  .node .nt b { font-size: 15px; font-weight: 650; }
+  .node .nt span { font-size: 12.5px; color: var(--ink-3); }
+  .node.agent { border-color: rgba(99, 102, 241, .5); background: linear-gradient(var(--card), var(--card)) padding-box, var(--chip-grad) border-box; border: 1.5px solid transparent; }
+  .node.agent .glyph { background: var(--primary-soft); color: var(--primary); }
+  .varrow { display: flex; justify-content: center; padding: 8px 0; color: var(--ink-3); }
+  .fan { position: relative; width: 100%; height: 36px; }
+  .fan::before { content: ""; position: absolute; left: 50%; top: 0; width: 1.5px; height: 18px; background: var(--fan-line); }
+  .fan::after { content: ""; position: absolute; left: 16.6667%; right: 16.6667%; top: 18px; height: 1.5px; background: var(--fan-line); }
+  .fan i {
+    position: absolute; top: 18px; width: 1.5px; height: 18px; background: var(--fan-line);
+  }
+  .fan i::after {
+    content: ""; position: absolute; left: -4px; bottom: -1px;
+    border-left: 4.8px solid transparent; border-right: 4.8px solid transparent;
+    border-top: 6px solid var(--fan-line);
+  }
+  .lanes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; width: 100%; }
+  .lane { padding: 16px 18px; display: flex; flex-direction: column; gap: 9px; }
+  .lane.l1 { border-top: 3px solid var(--s1); }
+  .lane.l2 { border-top: 3px solid var(--s2); }
+  .lane.l3 { border-top: 3px solid var(--s3); }
+  .lane-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+  .lane-head h3 { margin: 0; font-size: 16px; font-weight: 650; }
+  .pill { display: inline-flex; padding: 2.5px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill-s1 { background: var(--s1-soft); color: var(--s1); }
+  .pill-s2 { background: var(--s2-soft); color: var(--s2); }
+  .pill-s3 { background: var(--s3-soft); color: var(--s3); }
+  .kv { display: flex; gap: 10px; align-items: baseline; font-size: 13.5px; }
+  .kv .k { flex: none; min-width: 2.8em; color: var(--ink-3); }
+
+  /* ---------- Trace tree ---------- */
+  .t-root { padding: 14px 18px; }
+  .t-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .t-children { margin: 12px 0 0 10px; padding-left: 24px; border-left: 1.5px solid var(--fan-line); display: grid; gap: 13px; }
+  .t-node { position: relative; }
+  .t-node::before { content: ""; position: absolute; left: -24px; top: 14px; width: 17px; height: 1.5px; background: var(--fan-line); }
+  .pill-teal { background: var(--s2-soft); color: var(--s2); }
+  .pill-slate { background: var(--slate-soft); color: var(--slate-ink); }
+  .t-meta { font-size: 13px; color: var(--ink-3); }
+
+  /* ---------- Loki issues ---------- */
+  .issues { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .issue { padding: 16px 18px; }
+  .issue-head { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+  .issue-head svg { flex: none; color: var(--red); background: var(--red-soft); border-radius: 8px; padding: 5px; width: 22px; height: 22px; }
+  .issue-head h3 { margin: 0; font-size: 14.5px; font-weight: 650; }
+  .issue p { margin: 0; font-size: 13px; color: var(--ink-2); }
+  .aftermath { margin: 16px 0 0; color: var(--ink-2); }
+
+  /* ---------- Tables ---------- */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--card-border); border-radius: var(--radius); box-shadow: var(--shadow); background: var(--card); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--card-border); vertical-align: top; }
+  thead th { background: var(--bg-soft); color: var(--ink-3); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--bg-soft); }
+  .foot-note { margin: 12px 0 0; font-size: 13px; color: var(--ink-3); }
+
+  /* ---------- Modes A/B ---------- */
+  .modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .mode { padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; }
+  .mode.chosen { border: 1.5px solid var(--primary); box-shadow: 0 10px 30px rgba(99, 102, 241, .18); }
+  .mode-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .mode-head h3 { margin: 0; font-size: 15.5px; font-weight: 650; }
+  .pill-fill { background: var(--chip-grad); color: #fff; }
+  .mode p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+
+  /* ---------- Flow strip ---------- */
+  .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 10px; align-items: stretch; margin-top: 18px; }
+  .flow .step { padding: 13px 15px; display: flex; flex-direction: column; gap: 7px; }
+  .flow .step .pill { align-self: flex-start; }
+  .flow .step p { margin: 0; font-size: 13px; color: var(--ink-2); }
+  .flow .fa { display: flex; align-items: center; color: var(--ink-3); }
+
+  /* ---------- Tabs demo ---------- */
+  .views { margin-top: 18px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tabs button {
+    font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer;
+    color: var(--ink-2); background: var(--card);
+    border: 1px solid var(--card-border); border-radius: 999px; padding: 7px 16px;
+  }
+  .tabs button:hover { color: var(--primary); border-color: var(--primary); }
+  .tabs button.active { background: var(--chip-grad); color: #fff; border-color: transparent; box-shadow: 0 6px 16px rgba(99, 102, 241, .3); }
+  .tabpanel { margin-top: 13px; display: grid; gap: 9px; }
+  .msg {
+    margin: 0; border: 1px solid var(--card-border); background: var(--card);
+    border-radius: 14px; box-shadow: var(--shadow); padding: 15px 18px; font-size: 14.5px;
+  }
+  .ent { border-radius: 6px; padding: 1px 6px; }
+  .ent-mask { background: var(--slate-soft); color: var(--ink-2); }
+  .ent-plain { background: var(--primary-soft); color: var(--primary-deep); font-weight: 550; }
+  .cap { margin: 0; font-size: 12.5px; color: var(--ink-3); }
+  .note {
+    margin: 14px 0 0; padding: 12px 16px; border-radius: 10px;
+    background: var(--bg-soft); border-left: 3px solid var(--primary);
+    font-size: 13px; color: var(--ink-2);
+  }
+  .ok { color: var(--green); font-weight: 600; }
+  .no { color: var(--ink-3); }
+
+  /* ---------- Multimodal ---------- */
+  .mm { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .mm-card { padding: 17px 19px; }
+  .mm-card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+  .mm-card p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+  .codeblock {
+    margin: 14px 0 0; background: var(--code-bg); color: var(--code-ink);
+    border-radius: 12px; padding: 16px 18px; overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.8px; line-height: 1.65;
+  }
+  .codeblock .cm { color: #64748b; }
+
+  /* ---------- Steps ---------- */
+  .steps { margin: 18px 0 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 15px; }
+  .steps li { position: relative; padding-left: 42px; counter-increment: step; }
+  .steps li::before {
+    content: counter(step); position: absolute; left: 0; top: 1px;
+    width: 28px; height: 28px; border-radius: 9px;
+    background: var(--chip-grad); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+  }
+  .steps b { font-weight: 650; }
+  .steps .d { display: block; font-size: 13px; color: var(--ink-3); margin-top: 1px; }
+
+  /* ---------- Roadmap & implementation ---------- */
+  .stages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .stage { padding: 16px 18px; display: flex; flex-direction: column; gap: 9px; }
+  .stage-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .stage-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+  .stage ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--ink-2); }
+  .stage .deliver {
+    margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--card-border);
+    font-size: 12.5px; color: var(--ink-3);
+  }
+  .stage .deliver b { color: var(--ink-2); font-weight: 650; }
+  .impl-block { margin-top: 26px; }
+  .impl-block h3 { margin: 0 0 12px; font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 9px; }
+  .impl-block h3 .no {
+    flex: none; width: 24px; height: 24px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--primary-soft); color: var(--primary);
+    font-size: 13px; font-weight: 700;
+  }
+  .impl-block p { margin: 10px 0 0; font-size: 13px; color: var(--ink-3); }
+
+  /* ---------- Data transports ---------- */
+  .transports { display: grid; gap: 14px; }
+  .transport { padding: 16px 20px 14px; border-left: 3px solid var(--s1); }
+  .transport.t2 { border-left-color: var(--s2); }
+  .transport.t3 { border-left-color: var(--s3); }
+  .tr-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .tr-head h3 { margin: 0; font-size: 15.5px; font-weight: 650; }
+  .pipe { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 11px 0 3px; }
+  .pipe .st {
+    background: var(--slate-soft); color: var(--ink-2);
+    border-radius: 999px; padding: 3px 11px; font-size: 12.5px; font-weight: 550;
+  }
+  .pipe svg { color: var(--ink-3); flex: none; }
+  .transport ul { margin: 9px 0 0; padding-left: 18px; display: grid; gap: 5px; font-size: 13px; color: var(--ink-2); }
+
+  /* ---------- Refs & footer ---------- */
+  .refs { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; font-size: 13.5px; }
+  .refs .src { color: var(--ink-3); }
+  footer { margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--card-border); font-size: 12.5px; color: var(--ink-3); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+  @media (max-width: 760px) {
+    .page { padding: 16px 14px 40px; }
+    .hero { padding: 30px 24px 28px; border-radius: 18px; }
+    .hero h1 { font-size: 23px; }
+    .stats, .lanes, .modes, .mm, .stages { grid-template-columns: 1fr; }
+    .flow { grid-template-columns: 1fr; }
+    .flow .fa { display: none; }
+    .fan { display: none; }
+    .lanes { margin-top: 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="hero">
+    <h1>Agent 请求记录与审计脱敏 · 技术方案</h1>
+    <p class="sub">请求与 prompt 记录 · trace 追踪 · 多模态媒体 · 展示时脱敏审计 —— 选型结论与目标架构</p>
+    <div class="chips">
+      <span class="chip">Langfuse 核心 · MIT</span>
+      <span class="chip">模式 B · 展示时脱敏（已选定）</span>
+      <span class="chip">2026-10-17</span>
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="目录">
+    <a href="#s1">推荐架构</a>
+    <a href="#s2">数据传递</a>
+    <a href="#s3">Trace 树</a>
+    <a href="#s4">标识符映射</a>
+    <a href="#s5">Loki 局限</a>
+    <a href="#s6">方案对比</a>
+    <a href="#s7">审计与脱敏</a>
+    <a href="#s8">多模态</a>
+    <a href="#s9">落地清单</a>
+    <a href="#s10">落地路径</a>
+    <a href="#s11">参考资料</a>
+  </nav>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="k">Langfuse 核心许可</div>
+      <div class="v">MIT</div>
+      <div class="c">对话审计属核心功能，无需企业版</div>
+    </div>
+    <div class="stat">
+      <div class="k">可逆脱敏算法</div>
+      <div class="v">AES-256</div>
+      <div class="c">Presidio encrypt 操作符，密文 token 入库</div>
+    </div>
+    <div class="stat">
+      <div class="k">查看权限层级</div>
+      <div class="v">3 级</div>
+      <div class="c">审计员 / 合规主管 / 开发者</div>
+    </div>
+  </div>
+
+  <section class="sec" id="conclusion">
+    <div class="verdict card">
+      <h3>核心结论</h3>
+      <ul>
+        <li><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span><strong>Loki 不承担 prompt 存储</strong>：只索引标签、单行有大小上限、没有 trace 结构。它继续做普通服务日志（错误、审计事件、元数据）。</span></li>
+        <li><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span><strong>prompt 与每次模型返回交给 LLM tracing 平台</strong>：一次请求是一棵 trace 树，自托管首选 Langfuse（核心 MIT，v3 生产可用）。</span></li>
+        <li><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span><strong>媒体放 S3 兼容对象存储</strong>（SeaweedFS / MinIO），trace 只存 <code>s3://</code> key + 哈希 + MIME 引用。</span></li>
+        <li><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span><strong>审计脱敏采用「展示时脱敏」（模式 B，已选定）</strong>：Presidio encrypt 以 AES-256 把敏感值变成可逆密文 token 入库，审计界面默认渲染掩码，合规主管经 KMS 授权才能还原并留痕。</span></li>
+        <li><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span><strong>会话业务存储与审计存储分离</strong>：恢复 / 继续会话走业务自有在线存储（如 Postgres）；本方案的 Langfuse / S3 / Loki 仅承载审计与观测数据，不作为业务数据源。</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec" id="s1">
+    <div class="sec-head"><span class="sec-no">01</span><h2>推荐架构</h2></div>
+    <div class="arch">
+      <div class="node">
+        <span class="glyph">👤</span>
+        <div class="nt"><b>用户请求</b><span>文本 · 图片 · 文件</span></div>
+      </div>
+      <div class="varrow"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14m0 0-5-5m5 5 5-5"/></svg></div>
+      <div class="node agent">
+        <span class="glyph">🤖</span>
+        <div class="nt"><b>Agent 服务</b><span>编排 · 工具调用 · 多轮 LLM 请求</span></div>
+      </div>
+      <div class="fan" aria-hidden="true"><i style="left:16.6667%"></i><i style="left:50%"></i><i style="left:83.3333%"></i></div>
+      <div class="lanes">
+        <div class="card lane l1">
+          <div class="lane-head"><span class="dot" style="background:var(--s1)"></span><h3>Langfuse</h3><span class="pill pill-s1">trace 主数据</span></div>
+          <div class="kv"><span class="k">记录</span><span>prompt / completion（密文 token）、工具调用、token · 成本 · 延迟</span></div>
+          <div class="kv"><span class="k">脱敏</span><span>入库前过 Presidio encrypt（AES-256-GCM）</span></div>
+          <div class="kv"><span class="k">接入</span><span>SDK / OTLP（OTel GenAI 语义约定）</span></div>
+          <div class="kv"><span class="k">组成</span><span><code>web</code> <code>worker</code> <code>Postgres</code> <code>ClickHouse</code> <code>Redis</code></span></div>
+        </div>
+        <div class="card lane l2">
+          <div class="lane-head"><span class="dot" style="background:var(--s2)"></span><h3>S3 对象存储</h3><span class="pill pill-s2">媒体</span></div>
+          <div class="kv"><span class="k">记录</span><span>图片 / 音频 / 文件原件、超大 payload</span></div>
+          <div class="kv"><span class="k">选型</span><span>SeaweedFS（小文件强）· MinIO（生态全）</span></div>
+          <div class="kv"><span class="k">加密</span><span>服务端 SSE-KMS，trace 只存 s3:// key + sha256</span></div>
+        </div>
+        <div class="card lane l3">
+          <div class="lane-head"><span class="dot" style="background:var(--s3)"></span><h3>Loki</h3><span class="pill pill-s3">服务日志</span></div>
+          <div class="kv"><span class="k">记录</span><span>错误、审计事件、轻量元数据</span></div>
+          <div class="kv"><span class="k">不存</span><span>prompt / completion / 大 JSON</span></div>
+          <div class="kv"><span class="k">保留</span><span>天级，面向排障与告警</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="note">存储边界：会话业务存储与审计存储是两套独立存储——业务侧的会话状态与历史会话恢复由业务自有在线库（如 Postgres）承载；本方案的 Langfuse / S3 / Loki 只承载审计与观测数据（append-only），不作为业务数据源，双方以 conversation id 关联。</p>
+  </section>
+
+  <section class="sec" id="s2">
+    <div class="sec-head"><span class="sec-no">02</span><h2>数据传递：Agent 如何把数据交给 Langfuse / S3 / Loki</h2></div>
+    <p class="sec-intro">三条通路各自独立、并行工作，同一次请求的数据最终以 trace_id 汇合；观测数据全部在后台异步传递，不阻塞用户请求。</p>
+    <div class="transports">
+
+      <div class="card transport t1">
+        <div class="tr-head">
+          <span class="pill pill-fill">① trace 数据</span>
+          <h3>Agent → Langfuse</h3>
+          <span class="pill pill-s1">SDK 批量 flush · HTTPS（/api/public/ingestion 或 OTLP）</span>
+        </div>
+        <div class="pipe" aria-label="trace 数据流转路径">
+          <span class="st">SDK 装饰器捕获</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">进程内缓冲</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">后台批量 flush</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">worker 异步处理</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">ClickHouse / Postgres</span>
+        </div>
+        <ul>
+          <li><strong>非阻塞</strong>：上报在后台线程批量执行，不给用户请求加延迟；进程退出前 flush</li>
+          <li><strong>出进程前脱敏</strong>：masking 回调在 SDK 发送之前运行，离开 Agent 进程的已是密文 token / 掩码</li>
+          <li><strong>批量与重试</strong>：事件合并批量发送，失败重试与丢弃策略可配</li>
+          <li><strong>替代路径</strong>：已有 OTel 体系时走 OTel SDK → OTLP exporter → Langfuse OTLP 端点，语义一致</li>
+        </ul>
+      </div>
+
+      <div class="card transport t2">
+        <div class="tr-head">
+          <span class="pill pill-fill">② 媒体原件</span>
+          <h3>Agent → S3</h3>
+          <span class="pill pill-s2">S3 SDK 直传 · SSE-KMS</span>
+        </div>
+        <div class="pipe" aria-label="媒体文件流转路径">
+          <span class="st">收到图片 / 文件</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">sha256 + 校验</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">S3 PUT（SSE-KMS）</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">key 回填消息</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">引用随 trace 入库</span>
+        </div>
+        <ul>
+          <li><strong>应用直传</strong>：文件字节不经过 Langfuse 管道，进入 trace 的只有引用（s3:// key + sha256 + mime）</li>
+          <li><strong>先替换再上报</strong>：base64 消息替换成引用之后，才交给 ① 的上报通路——trace 体积可控</li>
+          <li><strong>变体</strong>：开启 <code>LANGFUSE_S3_MEDIA_UPLOAD_ENABLED</code> 后，data URI 媒体可由 worker 上传到 Langfuse 配置的 bucket；自管 bucket 时自己上传、只给引用</li>
+        </ul>
+      </div>
+
+      <div class="card transport t3">
+        <div class="tr-head">
+          <span class="pill pill-fill">③ 服务日志</span>
+          <h3>Agent → Loki</h3>
+          <span class="pill pill-s3">stdout 采集 · push API</span>
+        </div>
+        <div class="pipe" aria-label="日志流转路径">
+          <span class="st">stdout 输出 JSON 日志</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">Promtail / Alloy 采集</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">Loki push API</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg>
+          <span class="st">Loki 存储</span>
+        </div>
+        <ul>
+          <li><strong>只放轻数据</strong>：错误、审计事件、元数据——每条带 trace_id / session_id 字段，便于与 trace 互跳</li>
+          <li><strong>基数警告</strong>：user_id、trace_id 这类高基数字段放 JSON 字段、不要做 label，否则索引爆炸；查询时用 JSON 解析过滤</li>
+          <li><strong>小规模直推</strong>：可用 Loki HTTP API 或容器 logging driver 直推，省掉采集器</li>
+        </ul>
+      </div>
+
+    </div>
+    <p class="note">汇合方式：Langfuse trace 是锚点——日志按 <code>trace_id</code> 在 Loki 检索（<code>{"trace_id"="…"}</code>），媒体按 <code>s3://</code> key 从对象存储取回，三条通路的数据围绕同一次请求对齐。</p>
+  </section>
+
+  <section class="sec" id="s3">
+    <div class="sec-head"><span class="sec-no">03</span><h2>记录成什么样：一次请求的 trace 树</h2></div>
+    <p class="sec-intro">示例结构：一条 trace 挂多个 span / generation，工具入参、token 与耗时全部入库；敏感值以密文 token 形式出现（见第 07 节）。</p>
+    <div class="t-root card">
+      <div class="t-head">
+        <span class="pill pill-fill">trace</span>
+        <strong>POST /agent/run</strong>
+        <span class="t-meta">user u_8d21（假名）· session 7f3a9c · tag agent:cs-bot · 总 4.2s · $0.0121</span>
+      </div>
+      <div class="t-children">
+        <div class="t-node">
+          <div class="t-head"><span class="pill pill-slate">span</span><strong>接收请求</strong><span class="t-meta">用户输入（密文 token）+ 图片引用 s3://agent-media/…png（sha256: 9f2c…）</span></div>
+        </div>
+        <div class="t-node">
+          <div class="t-head"><span class="pill pill-teal">generation</span><strong>LLM 调用 #1</strong><span class="t-meta">glm-4.7 · in 1,248 tok / out 356 tok · 1.1s · prompt 与 completion 全文（密文 token）</span></div>
+        </div>
+        <div class="t-node">
+          <div class="t-head"><span class="pill pill-slate">span</span><strong>工具调用 web_search</strong><span class="t-meta">入参、返回摘要与耗时</span></div>
+        </div>
+        <div class="t-node">
+          <div class="t-head"><span class="pill pill-teal">generation</span><strong>LLM 调用 #2</strong><span class="t-meta">含工具结果 · in 2,010 tok / out 512 tok · 2.3s</span></div>
+        </div>
+        <div class="t-node">
+          <div class="t-head"><span class="pill pill-slate">span</span><strong>返回响应</strong><span class="t-meta">最终回复全文 + 引用媒体链接</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="s4">
+    <div class="sec-head"><span class="sec-no">04</span><h2>标识符映射：conversation / user / agent id</h2></div>
+    <p class="sec-intro">conversation id 与 user id 是 Langfuse 一等字段，agent id 用 tag 承载——现有方案直接覆盖，无需扩展存储。</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>你的标识符</th><th>Langfuse 落点</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><strong>conversation id</strong></td><td><code>sessionId</code>（一等字段）</td><td>相同 sessionId 的所有 trace 及内部 observation 聚合成会话视图，支持整段回放；超过 200 字符会被丢弃</td></tr>
+          <tr><td><strong>user id</strong></td><td><code>userId</code>（一等字段）</td><td>跨 trace 关联用户，配 User 对象与分群做单用户分析；派生自手机号 / 邮箱时先假名化（见第 07 节）</td></tr>
+          <tr><td><strong>agent id</strong></td><td><code>tags</code>（推荐）或 <code>metadata</code></td><td>tag 可在 UI 与 API 过滤（如 <code>agent:cs-bot</code>）；metadata 放非过滤用途的扩展信息</td></tr>
+          <tr><td><strong>请求级 id</strong></td><td>trace <code>id</code> / <code>name</code></td><td>每次用户请求一条 trace，自定义 trace id 与你的请求 id 对齐</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="modes" style="margin-top:14px">
+      <div class="card mode">
+        <div class="mode-head"><h3>多 agent 协作的两种建法</h3></div>
+        <ul class="refs" style="margin-top:4px">
+          <li><strong>一棵树</strong>：一条 trace 内把每个 agent 的执行建成嵌套 span，agent id 放 span 级 metadata——会话链路全貌在一处</li>
+          <li><strong>一人一线</strong>：每个 agent 一轮一条 trace，共享 sessionId + 各自 agent tag——按 agent 维度统计更方便</li>
+        </ul>
+        <p>两者可混用：主干一棵树，关键 agent 另行打点。</p>
+      </div>
+      <div class="card mode">
+        <div class="mode-head"><h3>上报与查询细节</h3></div>
+        <ul class="refs" style="margin-top:4px">
+          <li>OTel 接入：<code>langfuse.session.id</code> / <code>langfuse.user.id</code> / <code>langfuse.tags</code> 须打在<strong>根 span</strong> 上，放 resource attributes 不生效</li>
+          <li>查询：UI 按 session / user / tag 过滤；API <code>GET /api/v2/traces?sessionId=…</code>；自托管可直查 ClickHouse</li>
+          <li>多租户：org id 非一等字段，用 tag 或按租户分 project</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="s5">
+    <div class="sec-head"><span class="sec-no">05</span><h2>为什么 Loki 不适合存 prompt</h2></div>
+    <div class="issues">
+      <div class="card issue">
+        <div class="issue-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 2.8 19.5h18.4L12 4z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg><h3>单行大小上限</h3></div>
+        <p>ingestion 按 <code>max_line_size</code> 限制单行，长上下文 prompt 很容易超限，被截断或拒收。</p>
+      </div>
+      <div class="card issue">
+        <div class="issue-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg><h3>只索引标签</h3></div>
+        <p>只索引 label 与时间戳，内容检索等于全量扫描；大 JSON 行会让查询从毫秒级恶化到超时。</p>
+      </div>
+      <div class="card issue">
+        <div class="issue-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8 8l8 8M8 16 16 8"/></svg><h3>没有 trace 结构</h3></div>
+        <p>一次 agent 请求是多轮嵌套 span（模型、工具、重试），扁平日志流表达不了这种父子关系。</p>
+      </div>
+      <div class="card issue">
+        <div class="issue-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><path d="m4 4 16 16"/></svg><h3>展示与查询截断</h3></div>
+        <p>前端约 8,191 字符处截断；对大行做 JSON 字段提取的成本随数据量陡增。</p>
+      </div>
+    </div>
+    <p class="aftermath">→ Loki 的位置：继续收普通服务日志，prompt 存储让位给 tracing 平台。</p>
+  </section>
+
+  <section class="sec" id="s6">
+    <div class="sec-head"><span class="sec-no">06</span><h2>候选方案对比</h2></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>方案</th><th>形态</th><th>强项</th><th>适合谁</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Langfuse</strong></td><td>开源 · 自托管 / 云</td><td>trace 树、成本与 token 统计、评测、prompt 管理，多模态媒体直接落 S3；客户端 masking 钩子</td><td>自托管与隐私敏感场景的默认首选</td></tr>
+          <tr><td>Arize Phoenix</td><td>开源 · 自托管</td><td>OpenTelemetry 原生，tracing + 评测</td><td>已有 OTel 体系</td></tr>
+          <tr><td>LangSmith</td><td>SaaS</td><td>LangChain 官方深度集成</td><td>LangChain 重度用户</td></tr>
+          <tr><td>Helicone</td><td>开源 + 云</td><td>代理模式接入，分析与缓存</td><td>想在网关层无侵入记录</td></tr>
+          <tr><td>OTel GenAI semconv</td><td>标准</td><td><code>gen_ai.*</code> span 规范，内容捕获默认关闭、需 opt-in</td><td>自建后端（如 Grafana Tempo）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="foot-note">许可注记：Langfuse 核心为 MIT，商业授权仅覆盖 SCIM、平台操作审计日志（Audit Logs）、数据保留策略三个企业特性——「对话内容审计」不属于其中。</p>
+  </section>
+
+  <section class="sec" id="s7">
+    <div class="sec-head"><span class="sec-no">07</span><h2>审计与展示时脱敏（模式 B · 已选定）</h2></div>
+    <div class="modes">
+      <div class="card mode">
+        <div class="mode-head"><h3>模式 A · 入库前脱敏</h3><span class="pill pill-slate">备选</span></div>
+        <p>masking 函数在发送前把敏感值替换为掩码，Langfuse 只存掩码数据（Langfuse 官方 masking 即此模式）。敏感原文不出应用边界；但<strong>不可逆</strong>——审计员无法核验原文，需要另行自建加密映射表（vault）。</p>
+      </div>
+      <div class="card mode chosen">
+        <div class="mode-head"><h3>模式 B · 存储加密 + 展示脱敏</h3><span class="pill pill-fill">已选定</span></div>
+        <p>Presidio encrypt（AES-256-GCM）生成<strong>可逆密文 token</strong> 入库；审计界面按角色渲染掩码，持密钥授权后可还原。审计友好、可逆、密钥在自家 KMS；代价是要管好密钥与权限，并防止渲染层之外的旁路（导出、API 直查）。</p>
+      </div>
+    </div>
+
+    <div class="flow">
+      <div class="card step">
+        <span class="pill pill-s1">① 入库</span>
+        <p>Presidio Anonymizer 以 encrypt 操作符加密敏感实体，trace 落库为密文 token；媒体原件走 S3 SSE-KMS。</p>
+      </div>
+      <div class="fa" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg></div>
+      <div class="card step">
+        <span class="pill pill-s1">② 展示</span>
+        <p>审计界面默认按掩码规则渲染，审计员无需接触密钥即可安全查阅对话记录。</p>
+      </div>
+      <div class="fa" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></svg></div>
+      <div class="card step">
+        <span class="pill pill-s1">③ 核验</span>
+        <p>合规主管经 KMS 授权解密单条记录还原原文，每次解密写入审计事件，全程留痕。</p>
+      </div>
+    </div>
+
+    <div class="views">
+      <div class="tabs" role="tablist" aria-label="同一消息在审计链路中的三种视图">
+        <button type="button" role="tab" id="t-masked" aria-controls="p-masked" aria-selected="true" class="active">审计默认 · 掩码</button>
+        <button type="button" role="tab" id="t-plain" aria-controls="p-plain" aria-selected="false">授权后 · 原文</button>
+        <button type="button" role="tab" id="t-cipher" aria-controls="p-cipher" aria-selected="false">入库态 · 密文 token</button>
+      </div>
+      <div class="tabpanel" id="p-masked" role="tabpanel" aria-labelledby="t-masked">
+        <p class="msg">帮我联系下 <span class="ent ent-mask">张&nbsp;*</span>，电话 <span class="ent ent-mask">138****5678</span>，身份证 <span class="ent ent-mask">110101********8515</span>，邮箱 <span class="ent ent-mask">z*****i@example.com</span>，卡号 <span class="ent ent-mask">6222 **** **** 0000</span>。</p>
+        <p class="cap">审计界面默认渲染：掩码规则作用于渲染层，无密钥也能安全展示。</p>
+      </div>
+      <div class="tabpanel" id="p-plain" role="tabpanel" aria-labelledby="t-plain" hidden>
+        <p class="msg">帮我联系下 <span class="ent ent-plain">张伟</span>，电话 <span class="ent ent-plain">13812345678</span>，身份证 <span class="ent ent-plain">110101199003078515</span>，邮箱 <span class="ent ent-plain">zhangwei@example.com</span>，卡号 <span class="ent ent-plain">6222 0202 0000 0000</span>。</p>
+        <p class="cap">授权核验视图：仅合规主管经 KMS 授权可见，限单条、全程留痕。</p>
+      </div>
+      <div class="tabpanel" id="p-cipher" role="tabpanel" aria-labelledby="t-cipher" hidden>
+        <p class="msg">帮我联系下 <code>NAME_9f2c81e3</code>，电话 <code>PHONE_71b03ea7</code>，身份证 <code>IDCARD_3ad80712</code>，邮箱 <code>EMAIL_c4e12b90</code>，卡号 <code>CARD_8d51f004</code>。</p>
+        <p class="cap">ClickHouse 实际存储的内容：AES-256-GCM 密文 token，同一实体每次加密结果不同，持 data key 才能解密。</p>
+      </div>
+      <p class="cap" style="margin-top:6px">演示为静态示意；真实密文由 Presidio Anonymizer 的 encrypt 操作符生成。掩码规则（张&nbsp;*、138****5678 等）可按实体类型自定义。</p>
+    </div>
+
+    <div class="tbl-wrap" style="margin-top:18px">
+      <table>
+        <thead><tr><th>角色</th><th>默认看到</th><th>能否还原原文</th><th>典型用途</th></tr></thead>
+        <tbody>
+          <tr><td><strong>审计员</strong></td><td>掩码视图</td><td><span class="no">不可</span></td><td>日常合规抽查、对话抽样审查</td></tr>
+          <tr><td><strong>合规主管</strong></td><td>掩码视图，可申请还原</td><td><span class="ok">可 · KMS 授权并留痕</span></td><td>争议处理、安全调查核验</td></tr>
+          <tr><td><strong>开发者</strong></td><td>掩码 + 技术元数据</td><td><span class="no">不可</span></td><td>排障：token 用量、延迟、错误</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="note">防旁路要点：掩码只做在渲染层是不够的——API 与导出路径必须同样只返回密文 token 或掩码，原文只存在于解密服务之后；解密服务独立部署、单独审计。</p>
+    <p class="note">中文识别要点：Presidio 需配中文 NLP 模型（如 <code>zh_core_web_sm</code>），身份证、手机号、银行卡用自定义 recognizer（正则 + 校验位，如 <code>1[3-9]\d{9}</code>、18 位身份证校验、Luhn）；中文人名召回一般，建议规则 + 模型混合，必要时用 OpenPipe pii-redact（LLM 检测）兜底。</p>
+  </section>
+
+  <section class="sec" id="s8">
+    <div class="sec-head"><span class="sec-no">08</span><h2>多模态：图片与文件</h2></div>
+    <div class="mm">
+      <div class="card mm-card">
+        <h3>请求里本来就是 URL</h3>
+        <p>直接记录 URL 引用，不搬运文件。注意源可能失效，重要场景可异步镜像到自家 bucket。</p>
+      </div>
+      <div class="card mm-card">
+        <h3>base64 / 用户上传</h3>
+        <p>先落对象存储（SSE-KMS 加密），再把消息里的 base64 替换成引用后才入 trace；否则单条 trace 轻松数 MB，拖垮存储与查询。</p>
+      </div>
+    </div>
+    <pre class="codeblock"><span class="cm">// 记录前：原始 message（数 MB）</span>
+{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0…"}}
+
+<span class="cm">// 记录后：trace 里实际入库的内容</span>
+{"type": "image_url", "image_url": {"url": "s3://agent-media/2026/…/x.png"},
+ "meta": {"sha256": "9f2c…", "bytes": 183421, "mime": "image/png"}}</pre>
+    <p class="foot-note">存储选型注记：SeaweedFS 小文件性能与存储效率更好、许可宽松；MinIO 文档与生态最全。两者皆可，看运维熟悉度。</p>
+  </section>
+
+  <section class="sec" id="s9">
+    <div class="sec-head"><span class="sec-no">09</span><h2>落地清单</h2></div>
+    <p class="sec-intro">检查清单视图；分阶段节奏、工期估算与代码骨架见第 10 节。</p>
+    <ol class="steps">
+      <li><b>起服务</b><span class="d">docker compose 六个容器：<code>langfuse-web</code> <code>langfuse-worker</code> <code>postgres</code> <code>redis</code> <code>clickhouse</code> <code>minio / seaweed</code></span></li>
+      <li><b>接入埋点与标识符</b><span class="d">SDK / OTLP 接入（兼容 OTel GenAI 语义约定）；根 span 打 <code>langfuse.session.id</code> / <code>user.id</code> / <code>tags</code>；userId 先假名化再上报</span></li>
+      <li><b>搭脱敏管线</b><span class="d">Presidio Analyzer + Anonymizer；中文 recognizer（手机号 / 身份证 / 银行卡正则 + 校验位）；敏感实体用 encrypt（AES-256-GCM）生成可逆 token</span></li>
+      <li><b>管好密钥</b><span class="d">data key 放 KMS 或独立 vault，与 Langfuse 存储隔离；解密走独立服务，授权 + 留痕</span></li>
+      <li><b>配媒体桶</b><span class="d">自备 S3 bucket（SSE-KMS），开启 <code>LANGFUSE_S3_MEDIA_UPLOAD_ENABLED</code>；base64 先落 S3 再替换为引用</span></li>
+      <li><b>分审计角色</b><span class="d">Langfuse 项目角色：审计员只读 + 掩码视图；合规主管附加 KMS 解密授权；开发者看技术元数据</span></li>
+      <li><b>封旁路、定合规</b><span class="d">API / 导出只返回密文或掩码；明确保留期（ClickHouse 热数据 + S3 生命周期）与访问审计</span></li>
+    </ol>
+  </section>
+
+  <section class="sec" id="s10">
+    <div class="sec-head"><span class="sec-no">10</span><h2>分阶段落地路径与实现方案</h2></div>
+    <p class="sec-intro">基础设施全是配置，方案的核心差异点（脱敏 + 审计展示）必须写代码。若暂不需要可逆核验，可停在阶段二（模式 A），后续再升级到模式 B。</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>档位</th><th>覆盖内容</th><th>工作量</th></tr></thead>
+        <tbody>
+          <tr><td><strong>纯配置</strong></td><td>Langfuse 全家桶、S3 / SeaweedFS、Loki、媒体上传开关、成员角色分配</td><td>0 行代码</td></tr>
+          <tr><td><strong>轻量编码</strong></td><td>SDK 埋点、标识符透传、userId 假名化；官方集成框架（LangChain / OpenAI SDK 等）下近零，<strong>自研 agent 框架需手动打 span</strong></td><td>每服务几行 ~ 几十行</td></tr>
+          <tr><td><strong>必须开发</strong></td><td>Presidio 中文脱敏管线；模式 B 审计展示层（薄 Web 应用 + 解密服务 + 留痕）</td><td>数百行 + 调优 / 最大自研部分</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="stages" style="margin-top:16px">
+      <div class="card stage">
+        <div class="stage-head"><span class="pill pill-fill">阶段一</span><h3>先跑起来</h3><span class="pill pill-s2">约 1 周</span></div>
+        <ul>
+          <li>docker compose 起六容器（官方模板，纯配置）</li>
+          <li>SDK 装饰器埋点：请求入口 + LLM 调用 + 工具调用三个关键点</li>
+          <li>标识符透传：sessionId / 假名 userId / agent tag</li>
+        </ul>
+        <div class="deliver"><b>交付</b>：trace 可查、会话回放、成本报表<br><b>验收</b>：每条 LLM 调用都有 generation span</div>
+      </div>
+      <div class="card stage">
+        <div class="stage-head"><span class="pill pill-fill">阶段二</span><h3>脱敏上线</h3><span class="pill pill-s2">1 – 2 周</span></div>
+        <ul>
+          <li>Presidio 管线以模式 A 先行（masking 回调）</li>
+          <li>中文 recognizer：手机号 / 身份证 / 银行卡（正则 + 校验位）</li>
+          <li>全链路检查：入库数据无明文 PII</li>
+        </ul>
+        <div class="deliver"><b>交付</b>：入库即脱敏<br><b>验收</b>：抽样扫描 0 明文命中</div>
+      </div>
+      <div class="card stage">
+        <div class="stage-head"><span class="pill pill-fill">阶段三</span><h3>审计能力</h3><span class="pill pill-s2">2 – 4 周 · 按需</span></div>
+        <ul>
+          <li>升级模式 B：encrypt 替换 mask，data key 入 KMS</li>
+          <li>解密服务：独立部署、单条授权、全程留痕</li>
+          <li>审计前端：三级角色视图（见第 07 节）</li>
+        </ul>
+        <div class="deliver"><b>交付</b>：掩码审计 + 授权核验<br><b>验收</b>：无密钥可完成日常审计，解密 100% 留痕</div>
+      </div>
+    </div>
+
+    <div class="impl-block">
+      <h3><span class="no">1</span>基础设施：docker compose 骨架（纯配置）</h3>
+<pre class="codeblock" style="margin-top:0"><span class="cm"># 骨架示意，以官方 docker-compose.yml 模板为准</span>
+services:
+  langfuse-web:
+    image: langfuse/langfuse:3
+    ports: ["3000:3000"]
+    environment:
+      DATABASE_URL: postgresql://langfuse:...@postgres:5432/langfuse
+      NEXT_PUBLIC_CLICKHOUSE_URL: http://clickhouse:8123
+      LANGFUSE_S3_MEDIA_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_BUCKET: agent-media
+      LANGFUSE_S3_ENDPOINT: http://minio:9000        <span class="cm"># 或 seaweedfs s3</span>
+  langfuse-worker: { image: langfuse/langfuse:3, command: worker }
+  postgres:  { image: postgres:16 }
+  clickhouse: { image: clickhouse/clickhouse-server:24 }
+  redis:     { image: redis:7 }
+  minio:     { image: minio/minio }                   <span class="cm"># S3 兼容层</span></pre>
+    </div>
+
+    <div class="impl-block">
+      <h3><span class="no">2</span>埋点与标识符：SDK 装饰器（轻量编码）</h3>
+<pre class="codeblock" style="margin-top:0"><span class="cm"># 骨架示意，API 以所用 SDK 版本文档为准</span>
+import hashlib
+from langfuse import observe, langfuse_context
+
+def pseudonymize(user_id: str) -> str:                <span class="cm"># userId 假名化</span>
+    return "u_" + hashlib.sha256(user_id.encode()).hexdigest()[:12]
+
+@observe()                                            <span class="cm"># 根 span = 一次用户请求</span>
+def handle_request(req):
+    langfuse_context.update_current_trace(
+        session_id=req.conversation_id,               <span class="cm"># conversation id</span>
+        user_id=pseudonymize(req.user_id),            <span class="cm"># 假名后再上报</span>
+        tags=[f"agent:{req.agent_id}"],               <span class="cm"># agent id 走 tag</span>
+    )
+    return call_llm(req.messages)                     <span class="cm"># 内部再包 @observe → generation span</span></pre>
+      <p>自研框架提示：若不使用官方集成框架，手动埋三个关键点即可起步——请求入口、LLM 调用、工具调用；工具入参与返回摘要挂在 span 上。</p>
+    </div>
+
+    <div class="impl-block">
+      <h3><span class="no">3</span>Presidio 中文脱敏管线（必须开发，数百行 + 调优）</h3>
+<pre class="codeblock" style="margin-top:0"><span class="cm"># 骨架示意：模式 A 用 mask，模式 B 对敏感实体改用 encrypt</span>
+from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
+from presidio_anonymizer import AnonymizerEngine, OperatorConfig
+
+PHONE = PatternRecognizer(supported_entity="CN_PHONE",
+    patterns=[Pattern(name="cn-mobile", regex=r"1[3-9]\d{9}", score=0.95)])
+<span class="cm"># 同理注册：18 位身份证（校验位）、银行卡（Luhn）</span>
+
+analyzer = AnalyzerEngine(default_score_threshold=0.4, supported_languages="zh")
+analyzer.registry.add_recognizer(PHONE)
+
+def mask_pii(text: str, key: bytes) -> str:           <span class="cm"># 挂到 Langfuse masking 回调</span>
+    r = AnonymizerEngine().anonymize(
+        text=text,
+        analyzer_results=analyzer.analyze(text=text, language="zh"),
+        operators={
+            "DEFAULT":  OperatorConfig("mask", {"masking_char": "*", "chars_to_mask": 4}),
+            "CN_PHONE": OperatorConfig("encrypt", {"key": key}),  <span class="cm"># 模式 B：可逆</span>
+        })
+    return r.text</pre>
+      <p>召回率调优是持续工作：中文人名 NER 一般，规则 + 模型混合，必要时用 OpenPipe pii-redact（LLM 检测）兜底。</p>
+    </div>
+
+    <div class="impl-block">
+      <h3><span class="no">4</span>模式 B 审计展示层（最大自研部分，无现成开源整体方案）</h3>
+      <div class="mm" style="margin-top:4px">
+        <div class="card mm-card">
+          <h3>audit-web · 审计前端</h3>
+          <p>三级角色视图；默认掩码渲染；解密申请入口。可做得很薄：一个会话列表 + trace 详情页。</p>
+        </div>
+        <div class="card mm-card">
+          <h3>audit-api · 查询与渲染</h3>
+          <p>查 Langfuse API 拉取 trace；渲染层统一掩码；API 与导出路径同样只返回密文或掩码——防旁路的关键在这里。</p>
+        </div>
+        <div class="card mm-card">
+          <h3>decrypt-svc · 解密服务</h3>
+          <p>唯一持有 KMS data key 的组件；仅受理单条授权解密；每次调用写 append-only 留痕表，独立部署、单独审计。</p>
+        </div>
+      </div>
+      <p>减配路径：直接用 Langfuse UI 查看入库的密文 token，掩码 / 解密层全省，但审计员看到的是 <code>NAME_9f2c81e3</code> 这类内容，体验差；或在 LLM 网关层用 LiteLLM 的 Presidio guardrail（零代码，但只覆盖 LLM 调用入口）。</p>
+    </div>
+
+    <p class="note">性能提示：Presidio 跑在 masking 路径有延迟开销（社区有实测反馈），上线前先压测；可只对命中敏感特征的请求启用，或异步补脱敏。</p>
+    <p class="note">容量提示：多轮会话的 trace 体积膨胀快，ClickHouse 保留期建议先紧后松，S3 配生命周期归档，媒体桶与 trace 桶分开计费观察。</p>
+  </section>
+
+  <section class="sec" id="s11">
+    <div class="sec-head"><span class="sec-no">11</span><h2>参考资料</h2></div>
+    <ul class="refs">
+      <li><span class="src">平台</span>：<a href="https://langfuse.com/self-hosting">Langfuse 自托管文档</a> · <a href="https://langfuse.com/pricing-self-host">自托管定价（MIT 核心 / 企业特性范围）</a> · <a href="https://langfuse.com/self-hosting/license-key">Enterprise License Key</a></li>
+      <li><span class="src">功能</span>：<a href="https://langfuse.com/docs/observability/features/masking">Masking（客户端脱敏钩子）</a> · <a href="https://langfuse.com/docs/observability/features/multi-modality">多模态 trace</a> · <a href="https://langfuse.com/self-hosting/deployment/infrastructure/blobstorage">S3 / Blob 配置</a></li>
+      <li><span class="src">标识符</span>：<a href="https://langfuse.com/docs/observability/features/sessions">Sessions</a> · <a href="https://langfuse.com/docs/observability/features/users">User Tracking</a> · <a href="https://langfuse.com/docs/observability/features/tags">Tags</a> · <a href="https://langfuse.com/integrations/native/opentelemetry">OTel 集成与属性映射</a></li>
+      <li><span class="src">脱敏</span>：<a href="https://microsoft.github.io/presidio/">Microsoft Presidio（MIT）</a> · <a href="https://github.com/OpenPipe/pii-redaction">OpenPipe pii-redact</a></li>
+      <li><span class="src">标准与存储</span>：<a href="https://opentelemetry.io/docs/specs/semconv/gen-ai">OpenTelemetry GenAI 语义约定</a> · <a href="https://grafana.com/docs/loki/latest/configure/loki-limits/">Loki limits（max_line_size）</a> · <a href="https://clickhouse.com/blog/langfuse-and-clickhouse-a-new-data-stack-for-modern-llm-applications">Langfuse × ClickHouse 数据栈</a> · <a href="https://iomete.com/resources/blog/evaluating-s3-compatible-storage-for-lakehouse">自托管 S3 存储对比</a></li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>Agent 请求记录与审计脱敏 · 技术方案报告</span>
+    <span>自包含单文件，无外部依赖，可离线直接打开 · 2026-10-17</span>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var tabs = document.querySelectorAll('.tabs [role="tab"]');
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () {
+        tabs.forEach(function (x) {
+          x.classList.remove('active');
+          x.setAttribute('aria-selected', 'false');
+        });
+        t.classList.add('active');
+        t.setAttribute('aria-selected', 'true');
+        var target = t.getAttribute('aria-controls');
+        document.querySelectorAll('.tabpanel').forEach(function (p) {
+          p.hidden = p.id !== target;
+        });
+      });
+    });
+  })();
+</script>
+</body>
+</html>
