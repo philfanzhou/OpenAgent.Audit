@@ -1,0 +1,177 @@
+# OpenAgent.Audit deployment stack (proposal §10 step 1, §11.1).
+#
+#   docker compose --env-file .env up -d
+#
+# Langfuse images follow the official docker-compose template; NEXTAUTH_SECRET
+# / SALT / ENCRYPTION_KEY and the S3 event-bucket variables are required —
+# see .env.example. The audit domain (audit-db + audit-api + decrypt-svc) is
+# this repository.
+
+services:
+  # ---- Langfuse open-source edition (trace master data) --------------------
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:?}
+      POSTGRES_DB: langfuse
+    volumes: [langfuse-pg:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      retries: 12
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?}
+    volumes: [clickhouse:/var/lib/clickhouse]
+
+  redis:
+    image: redis:7
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    volumes: [minio:/data]
+    # Buckets (created by `minio-init`): langfuse-events (SDK raw events),
+    # agent-media (encrypted media), audit-archive (Object Lock required).
+
+  minio-init:
+    image: minio/mc
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD &&
+      mb --ignore-existing local/langfuse-events &&
+      mb --ignore-existing local/agent-media &&
+      mb --ignore-existing --with-lock local/audit-archive &&
+      echo 'buckets ready'"
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4
+    depends_on:
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_started }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD}@postgres:5432/langfuse
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_AUTH: ${CLICKHOUSE_PASSWORD}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?}
+      SALT: ${SALT:?}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      # Media is uploaded by the application (client-side encrypted) —
+      # deliberately NOT configuring LANGFUSE_S3_MEDIA_UPLOAD_*.
+
+  langfuse-web:
+    image: langfuse/langfuse:4
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["3000:3000"]
+    environment: *langfuse-env
+
+  # ---- Audit domain (this repo) ---------------------------------------------
+  audit-db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: audit_owner
+      POSTGRES_PASSWORD: ${AUDIT_DB_PASSWORD:?}
+      POSTGRES_DB: openagent_audit
+    volumes:
+      - audit-pg:/var/lib/postgresql/data
+      - ./deploy/audit_db_init.sql:/docker-entrypoint-initdb.d/10_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit_owner -d openagent_audit"]
+      interval: 5s
+      retries: 12
+
+  decrypt-svc:
+    build: .
+    image: openagent-audit:latest
+    depends_on:
+      audit-db: { condition: service_healthy }
+    command: >
+      uvicorn openagent_audit.services.decrypt_app:app
+      --host 0.0.0.0 --port 8101
+    environment: &audit-env
+      AUDIT_ENV: production
+      AUDIT_DB_URL: postgresql://decrypt_svc:${AUDIT_DB_PASSWORD}@audit-db:5432/openagent_audit
+      AUDIT_SERVICE_TOKEN: ${AUDIT_SERVICE_TOKEN:?}
+      AUDIT_KEY_PROVIDER: ${AUDIT_KEY_PROVIDER:-local}
+      AUDIT_PRIVATE_KEY_PATH: /keys/audit_private_key.pem
+      AUDIT_PRIVATE_KEY_PASSPHRASE: ${AUDIT_PRIVATE_KEY_PASSPHRASE:-}
+      AUDIT_PUBLIC_KEY_PATH: /keys/audit_public_key.pem
+      AUDIT_OBJECT_STORE: ${AUDIT_OBJECT_STORE:-s3}
+      AUDIT_OBJECT_STORE_ROOT: /data/objects
+      AUDIT_MEDIA_BUCKET: agent-media
+      AUDIT_S3_ENDPOINT: http://minio:9000
+      AUDIT_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      AUDIT_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      AUDIT_TRACE_RETENTION_DAYS: ${AUDIT_TRACE_RETENTION_DAYS:-90}
+      AUDIT_ARCHIVE_AFTER_DAYS: ${AUDIT_ARCHIVE_AFTER_DAYS:-30}
+      AUDIT_REVEAL_TTL_MINUTES: ${AUDIT_REVEAL_TTL_MINUTES:-10}
+      AUDIT_PII_BACKEND: ${AUDIT_PII_BACKEND:-rules}
+      LOKI_URL: http://loki:3100
+    volumes:
+      - ./keys:/keys:ro
+      - object-data:/data/objects
+    # decrypt-svc uses the decrypt_svc DB role (SELECT ciphertext + INSERT audit log).
+
+  audit-api:
+    image: openagent-audit:latest
+    build: .
+    depends_on:
+      audit-db: { condition: service_healthy }
+      decrypt-svc: { condition: service_started }
+    ports: ["8100:8100"]
+    command: >
+      uvicorn openagent_audit.services.audit_api:create_app
+      --factory --host 0.0.0.0 --port 8100
+    environment:
+      <<: *audit-env
+      AUDIT_DB_URL: postgresql://audit_api:${AUDIT_DB_PASSWORD}@audit-db:5432/openagent_audit
+      AUDIT_DECRYPT_SVC_URL: http://decrypt-svc:8101
+      AUDIT_USERS: ${AUDIT_USERS:?}
+      AUDIT_TRACE_STORE: ${AUDIT_TRACE_STORE:-langfuse}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    # audit-api uses the audit_api DB role (no SELECT on ciphertext, by grant).
+
+  # ---- Service logs + alerting copies ---------------------------------------
+  loki:
+    image: grafana/loki:3.5
+    ports: ["3100:3100"]
+    volumes:
+      - ./deploy/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:3.5
+    depends_on: [loki]
+    volumes:
+      - ./deploy/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/log/openagent:/var/log/openagent:ro
+    command: -config.file=/etc/promtail/config.yml
+
+volumes:
+  langfuse-pg:
+  clickhouse:
+  minio:
+  audit-pg:
+  object-data:

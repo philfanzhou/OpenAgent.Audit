@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openagent-audit"
+version = "0.1.0"
+description = "Audit and observability data plane for OpenAgent: masked traces, encrypted entity vault, hash-chained audit log."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "OpenAgent" }]
+dependencies = [
+  "cryptography>=42",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "jinja2>=3.1",
+  "pydantic>=2.6",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+langfuse = ["langfuse>=5.0"]
+postgres = ["psycopg[binary]>=3.1"]
+s3 = ["boto3>=1.34"]
+presidio = ["presidio-analyzer>=2.2"]
+dev = ["pytest>=8", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openagent_audit = ["services/templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
