@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}登录 · OpenAgent 审计台{% endblock %}
+{% block content %}
+<div class="card login">
+  <h1>OpenAgent 审计台</h1>
+  <p class="sub">掩码浏览 · 授权核验 · 全程留痕</p>
+  <form method="post" action="/ui/login">
+    <label for="token">访问令牌</label>
+    <input id="token" name="token" type="password" autofocus autocomplete="off">
+    <p style="margin-top:14px"><button class="primary" type="submit">登录</button></p>
+  </form>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+</div>
+{% endblock %}

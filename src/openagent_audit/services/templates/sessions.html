@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}会话 · OpenAgent 审计台{% endblock %}
+{% block content %}
+<h1>会话</h1>
+<p class="sub">审计默认视图：全部内容为入库掩码，全程不解密。</p>
+{% if not sessions %}
+<div class="card muted">暂无会话。</div>
+{% else %}
+<div class="card" style="padding:0">
+<table>
+  <thead><tr><th>会话 ID</th><th>用户</th><th>Agent</th><th>trace 数</th><th>最近活动</th></tr></thead>
+  <tbody>
+  {% for s in sessions %}
+    <tr>
+      <td><a href="/ui/sessions/{{ s.session_id }}"><code>{{ s.session_id }}</code></a></td>
+      <td><code>{{ s.user_id }}</code></td>
+      <td>{{ s.agent_tags|join(', ') }}</td>
+      <td>{{ s.trace_count }}</td>
+      <td>{{ s.last_ts|tsformat }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

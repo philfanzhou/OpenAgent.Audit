@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}会话 {{ session_id }} · OpenAgent 审计台{% endblock %}
+{% block content %}
+<h1>会话 <code>{{ session_id }}</code></h1>
+<p class="sub">敏感值以「编号 + 掩码」入库；原文还原须经审批并由 decrypt-svc 解密。</p>
+{% for t in traces %}
+<div class="card">
+  <p style="margin:0 0 4px"><span class="pill b3">trace</span> <code>{{ t.trace_id }}</code>
+     <span class="muted">{{ t.timestamp|tsformat }}</span></p>
+  <p class="muted" style="margin:0 0 12px">用户 <code>{{ t.user_id }}</code> · {{ t.agent_tag }} · {{ t.name }}</p>
+  {% for o in t.observations %}
+    <p style="margin:8px 0 2px">
+      <span class="pill {{ 'ok' if o.type == 'generation' else 'mute' }}">{{ o.type }}</span>
+      <strong>{{ o.name }}</strong>
+      {% if o.model %}<span class="muted">{{ o.model }}</span>{% endif %}
+      {% if o.usage %}<span class="muted">{{ o.usage }}</span>{% endif %}
+      {% if o.latency_ms %}<span class="muted">{{ o.latency_ms }}ms</span>{% endif %}
+    </p>
+    {% if o.input %}
+      <div class="msg"><pre>{{ o.input|entmark|safe }}</pre></div>
+    {% endif %}
+    {% if o.output %}
+      <div class="msg"><pre>{{ o.output|entmark|safe }}</pre></div>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endfor %}
+{% endblock %}

@@ -1,1 +1,10 @@
 .DS_Store
+__pycache__/
+*.pyc
+.coverage
+htmlcov/
+.pytest_cache/
+*.egg-info/
+data/
+keys/
+.env

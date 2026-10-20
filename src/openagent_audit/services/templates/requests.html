@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}还原审批 · OpenAgent 审计台{% endblock %}
+{% block content %}
+<h1>还原审批</h1>
+<p class="sub">合规主管申请 → 另一名合规主管审批（四眼原则）→ decrypt-svc 解密，限单条、全程留痕。</p>
+{% if not requests %}
+<div class="card muted">暂无还原申请。</div>
+{% else %}
+{% for r in requests %}
+<div class="card">
+  <p style="margin:0 0 6px">
+    <span class="pill {{ {'pending':'b3','approved':'ok','fulfilled':'ok','rejected':'risk'}[r.status] }}">{{ r.status }}</span>
+    <code>{{ r.id[:12] }}</code>
+    <span class="muted">{{ r.object_type }} · <code>{{ r.object_id[:24] }}</code></span>
+  </p>
+  <p style="margin:4px 0"><strong>理由：</strong>{{ r.reason }}</p>
+  <p class="muted" style="margin:4px 0">申请人 {{ r.requested_by }}
+    {% if r.approver %}· 审批人 {{ r.approver }}{% endif %}
+    {% if r.trace_id %}· trace <code>{{ r.trace_id[:16] }}</code>{% endif %}
+    {% if r.reveal_expires_at %}· 浏览窗口至 {{ r.reveal_expires_at|tsformat('%H:%M:%S') }}{% endif %}
+  </p>
+  {% if r.status == 'pending' and principal and principal.role == 'compliance_lead' and principal.username != r.requested_by %}
+  <div class="row" style="margin-top:10px">
+    <form class="inline" method="post" action="/ui/requests/{{ r.id }}/decide">
+      <input type="hidden" name="decision" value="approve">
+      <input type="hidden" name="comment" value="">
+      <button class="primary">批准</button>
+    </form>
+    <form class="inline" method="post" action="/ui/requests/{{ r.id }}/decide">
+      <input type="hidden" name="decision" value="reject">
+      <input type="hidden" name="comment" value="">
+      <button class="danger">驳回</button>
+    </form>
+  </div>
+  {% elif r.status == 'pending' %}
+  <p class="muted" style="margin-top:8px">待其他合规主管审批（申请人不能自审）。</p>
+  {% elif r.status == 'approved' and principal and principal.role == 'compliance_lead' %}
+  <form class="inline" method="post" action="/ui/requests/{{ r.id }}/reveal" style="margin-top:8px">
+    <button class="primary">解密并查看原文</button>
+  </form>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}
