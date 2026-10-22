@@ -67,7 +67,7 @@ Open `http://localhost:8100/ui/login` and sign in with a token from `AUDIT_USERS
 ### Tests
 
 ```bash
-python -m pytest tests -v          # 136 tests: unit + API + write/read e2e
+python -m pytest tests -q          # 146 tests pass (3 Postgres integration tests skip without a container)
 python scripts/smoke_e2e.py        # boots both services under real uvicorn, exercises audit-api -> decrypt-svc over HTTP
 ```
 
@@ -92,6 +92,15 @@ all (the structural no-bypass property), and decrypt-svc is the sole reader.
 audit-api + decrypt-svc + Loki/Promtail); copy `.env.example` to `.env` and
 fill in the secrets. `deploy/audit_db_init.sql` creates the audit schema and
 the application roles with the grant matrix above.
+
+Operations:
+
+- **Retention** runs one pass via `python -m openagent_audit.services.retention`
+  (schedule with cron / k8s CronJob; in deployment use the `audit_retention`
+  DB role from `deploy/audit_db_init.sql`).
+- **Alerting** — `deploy/alerting/` contains the Prometheus scrape config and
+  alert rules for the export drop counters (`dropped_batches > 0` must page
+  someone; fail-closed drops are a loss of restorability).
 
 What remains a compliance decision (configured, not hard-coded): mask depth
 per entity type, retention windows, reveal TTL, and the recall/precision

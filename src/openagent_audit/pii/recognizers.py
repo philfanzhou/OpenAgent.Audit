@@ -137,7 +137,7 @@ def _id_card_recognizer(text: str) -> list[Span]:
 def _bank_card_recognizer(text: str) -> list[Span]:
     out: list[Span] = []
     normalized = normalize(text)
-    for m in re.finditer(r"(?<!\d)\d(?:[\d\- ]{10,32})\d(?!\d)", normalized):
+    for m in re.finditer(r"(?<!\d)\d(?:[\d\- \u00a0]{10,32})\d(?!\d)", normalized):
         d = digits_only(m.group(0))
         if 13 <= len(d) <= 19 and is_valid_luhn(d):
             out.append(Span(m.start(), m.end(), "BANK_CARD", 0.9, text[m.start() : m.end()]))

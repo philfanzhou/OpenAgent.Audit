@@ -21,6 +21,36 @@ def seeded(api_client, container, pipeline, trace_store):
     return raw
 
 
+def test_session_view_audited(api_client, seeded):
+    """Every session view (API and UI) lands in the audit log (proposal §08)."""
+    api_client.get("/v1/sessions/sess-1001", headers=AUD)
+    api_client.get("/ui/sessions/sess-1001", cookies={"openagent_audit_session": "tok-auditor"})
+    log = api_client.get("/v1/audit-log", headers=AUD).json()
+    viewed = [e for e in log["entries"] if e["action"] == "SESSION_VIEWED"]
+    assert len(viewed) == 2
+    assert all(e["object_id"] == "sess-1001" for e in viewed)
+    assert {e["actor"] for e in viewed} == {"alice"}
+
+
+def test_trace_search_time_range_and_user(api_client, seeded):
+    ok = api_client.get(
+        "/v1/traces", headers=AUD,
+        params={"user_id": "usr_10086342"},
+    )
+    assert ok.status_code == 200 and len(ok.json()["traces"]) == 1
+    none = api_client.get("/v1/traces", headers=AUD, params={"user_id": "usr_other"})
+    assert none.json()["traces"] == []
+    bad = api_client.get("/v1/traces", headers=AUD, params={"from_ts": "not-a-date"})
+    assert bad.status_code == 422
+
+
+def test_metrics_prometheus_exposition(api_client, container):
+    container.drop_monitor.record_batch_dropped()
+    resp = api_client.get("/internal/metrics/prometheus", headers=AUD)
+    assert resp.status_code == 200
+    assert "openagent_audit_dropped_batches 1" in resp.text
+
+
 def test_healthz(api_client):
     resp = api_client.get("/healthz")
     assert resp.status_code == 200

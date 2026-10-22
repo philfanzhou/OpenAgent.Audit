@@ -110,3 +110,20 @@ class RetentionJob:
             _WATERMARK_KEY,
             json.dumps({"last_seq": last_seq}).encode("utf-8"),
         )
+
+
+def main() -> None:
+    """CLI entry point: ``python -m openagent_audit.services.retention``.
+
+    Runs one retention pass from environment settings; schedule it with cron
+    or a k8s CronJob (proposal §10 step 8: 定时任务按期删除过期 trace 与密文表
+    对应行、归档审计日志)."""
+    from openagent_audit.bootstrap import build_retention_job
+    from openagent_audit.config import Settings
+
+    job = build_retention_job(Settings.from_env())
+    print(json.dumps(job.run(), ensure_ascii=False))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

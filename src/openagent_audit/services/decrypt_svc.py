@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
@@ -46,7 +47,14 @@ def _check_service_token(request: Request, token: str) -> None:
         raise HTTPException(status_code=401, detail="invalid service token")
 
 
-def _require_approved_request(db, request_id: str) -> None:
+def _require_approved_request(db, request_id: str, *, object_type: str, object_id: str):
+    """Independent gate (defense in depth beyond audit-api):
+
+    - the request must exist and be APPROVED / FULFILLED;
+    - the request must cover exactly the object being decrypted — one approved
+      request can never unlock a different entity or media object;
+    - a FULFILLED request is only valid inside its reveal TTL window.
+    """
     req = db.get_restore_request(request_id)
     if req is None:
         raise HTTPException(status_code=404, detail="restore request not found")
@@ -55,6 +63,18 @@ def _require_approved_request(db, request_id: str) -> None:
             status_code=409,
             detail=f"restore request is {req.status.value!r}; decryption requires approval",
         )
+    if req.object_type != object_type or req.object_id != object_id:
+        raise HTTPException(
+            status_code=403,
+            detail="restore request does not cover this object",
+        )
+    if req.status is RestoreStatus.FULFILLED:
+        if req.reveal_expires_at is None or datetime.now(timezone.utc) >= req.reveal_expires_at:
+            raise HTTPException(
+                status_code=410,
+                detail="reveal window has expired; file a new restore request",
+            )
+    return req
 
 
 def create_decrypt_app(deps: DecryptServiceDeps) -> FastAPI:
@@ -67,7 +87,9 @@ def create_decrypt_app(deps: DecryptServiceDeps) -> FastAPI:
     @app.post("/v1/decrypt")
     def decrypt_entity(body: DecryptEntityBody, request: Request) -> dict:
         _check_service_token(request, deps.service_token)
-        _require_approved_request(deps.db, body.request_id)
+        _require_approved_request(
+            deps.db, body.request_id, object_type="entity", object_id=body.entity_id
+        )
         row = deps.db.get_entity(body.entity_id)
         if row is None:
             raise HTTPException(status_code=404, detail="entity not found")
@@ -85,7 +107,9 @@ def create_decrypt_app(deps: DecryptServiceDeps) -> FastAPI:
     @app.post("/v1/decrypt-media")
     def decrypt_media(body: DecryptMediaBody, request: Request) -> Response:
         _check_service_token(request, deps.service_token)
-        _require_approved_request(deps.db, body.request_id)
+        _require_approved_request(
+            deps.db, body.request_id, object_type="media", object_id=body.key
+        )
         if deps.object_store is None:
             raise HTTPException(status_code=503, detail="no object store configured")
         try:

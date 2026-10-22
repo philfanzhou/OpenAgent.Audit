@@ -1,0 +1,41 @@
+# Prometheus alert rules for OpenAgent.Audit (proposal §02 通路① / §10 step 8).
+# Scrape audit-api's /internal/metrics/prometheus (see prometheus.yml alongside)
+# and alert when any export batch is dropped or ciphertext writes fail —
+# fail-closed drops mean masked data never reached Langfuse and the matching
+# plaintext can never be restored.
+groups:
+  - name: openagent-audit
+    rules:
+      - alert: AuditExportBatchDropped
+        expr: openagent_audit_dropped_batches > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Langfuse export batch dropped (fail-closed masking hook)"
+          description: >-
+            {{ $value }} batch(es) were dropped by the masking hook. Those spans
+            never left the Agent process; their entities have no vault rows and
+            can never be restored. Investigate the masking pipeline immediately.
+
+      - alert: AuditVaultWriteFailures
+        expr: openagent_audit_vault_write_failures > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ciphertext vault write failures"
+          description: >-
+            Vault writes failed after retries; affected entities are masked but
+            not restorable. Check audit-db health and connectivity.
+
+      - alert: AuditDecryptSpike
+        expr: increase(openagent_audit_restores_revealed[15m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual restore/reveal volume in the last 15 minutes"
+          description: >-
+            More than 5 reveals in 15 minutes — verify the approvals in the
+            audit log (audit-web) match an active investigation.

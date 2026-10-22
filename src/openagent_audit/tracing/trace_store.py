@@ -42,7 +42,11 @@ class TraceStore(Protocol):
     def upsert_trace(self, trace: TraceRecord) -> None: ...
     def get_trace(self, trace_id: str) -> TraceRecord | None: ...
     def list_traces(
-        self, session_id: str | None = None, user_id: str | None = None
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
     ) -> list[TraceRecord]: ...
     def delete_trace(self, trace_id: str) -> None: ...
     def delete_older_than(self, cutoff: datetime) -> list[str]: ...
@@ -65,7 +69,11 @@ class LocalTraceStore:
             return self._traces.get(trace_id)
 
     def list_traces(
-        self, session_id: str | None = None, user_id: str | None = None
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
     ) -> list[TraceRecord]:
         with self._lock:
             traces = list(self._traces.values())
@@ -73,6 +81,10 @@ class LocalTraceStore:
             traces = [t for t in traces if t.session_id == session_id]
         if user_id is not None:
             traces = [t for t in traces if t.user_id == user_id]
+        if from_ts is not None:
+            traces = [t for t in traces if t.timestamp >= from_ts]
+        if to_ts is not None:
+            traces = [t for t in traces if t.timestamp < to_ts]
         return sorted(traces, key=lambda t: t.timestamp)
 
     def delete_trace(self, trace_id: str) -> None:
@@ -133,13 +145,26 @@ class LangfuseTraceStore:
             )
 
     def list_traces(
-        self, session_id: str | None = None, user_id: str | None = None
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
     ) -> list[dict]:
+        """Langfuse API is the source of truth; retrieval stays limited to
+        userId / sessionId / time range (proposal §08 检索范围 — no reverse
+        lookup by phone number or ID card)."""
+        from datetime import timezone
+
         params: dict[str, str] = {}
         if session_id:
             params["sessionId"] = session_id
         if user_id:
             params["userId"] = user_id
+        if from_ts is not None:
+            params["fromTimestamp"] = from_ts.astimezone(timezone.utc).isoformat()
+        if to_ts is not None:
+            params["toTimestamp"] = to_ts.astimezone(timezone.utc).isoformat()
         resp = self._client.get("/api/public/traces", params=params)
         resp.raise_for_status()
         return resp.json().get("data", [])

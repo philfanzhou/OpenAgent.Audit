@@ -164,8 +164,14 @@ def seed_masked_conversation(
     raw_output = "好的，已联系张伟本人，邮箱 zhangwei@example.com。"
 
     # export-thread masking (exactly what the hook does to span attributes)
-    masked_input = mask_attribute_map({"langfuse.observation.input": raw_input}, pipeline, ("langfuse.observation.input",))
-    masked_output = mask_attribute_map({"langfuse.observation.output": raw_output}, pipeline, ("langfuse.observation.output",))
+    masked_input = mask_attribute_map(
+        {"langfuse.observation.input": raw_input}, pipeline, ("langfuse.observation.input",),
+        trace_id=trace_id, session_id=session_id,
+    )
+    masked_output = mask_attribute_map(
+        {"langfuse.observation.output": raw_output}, pipeline, ("langfuse.observation.output",),
+        trace_id=trace_id, session_id=session_id,
+    )
 
     trace_store.upsert_trace(
         TraceRecord(

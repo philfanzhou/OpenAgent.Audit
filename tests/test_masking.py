@@ -52,13 +52,36 @@ def test_vault_never_stores_plaintext(pipeline, db):
     assert VALID_EMAIL not in row.entity_id
 
 
-def test_same_text_cached_no_duplicate_rows(pipeline, db):
+def test_same_text_cached_detection_but_fresh_ciphertext(cipher, db):
+    """Detection is cached per text hash (perf), but every call re-generates
+    the random entity id and re-seals, and writes vault rows bound to the
+    current trace/session (proposal §08 随机化 + §10 step 8 保留期联动)."""
+    from openagent_audit.pii.engine import RuleBasedEngine
+    from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
+
+    class SpyEngine(RuleBasedEngine):
+        calls = 0
+
+        def detect(self, text):
+            self.calls += 1
+            return super().detect(text)
+
+    spy = SpyEngine()
+    scoped = MaskingPipeline(engine=spy, cipher=cipher, vault_writer=VaultWriter(db))
     text = f"电话{VALID_PHONE}"
-    first = pipeline.protect(text, trace_id="t5", session_id="s5")
-    second = pipeline.protect(text, trace_id="t6", session_id="s6")
-    assert first.masked_text == second.masked_text
-    assert [e.entity_id for e in first.entities] == [e.entity_id for e in second.entities]
-    assert pipeline.stats()["entities_masked"] == 1
+    first = scoped.protect(text, trace_id="t5", session_id="s5")
+    second = scoped.protect(text, trace_id="t6", session_id="s6")
+    # detection ran once (cached), sealing twice
+    assert spy.calls == 1
+    assert [e.mask for e in first.entities] == [e.mask for e in second.entities]
+    assert [e.entity_id for e in first.entities] != [e.entity_id for e in second.entities]
+    assert first.entities[0].ciphertext != second.entities[0].ciphertext
+    assert scoped.stats()["entities_masked"] == 2
+    # both traces have restorable vault rows with correct ownership
+    for rec, trace_id, session_id in ((first.entities[0], "t5", "s5"), (second.entities[0], "t6", "s6")):
+        row = db.get_entity(rec.entity_id)
+        assert row is not None
+        assert row.trace_id == trace_id and row.session_id == session_id
 
 
 def test_entity_ids_random_not_derived(pipeline):
