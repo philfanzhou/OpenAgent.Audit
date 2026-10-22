@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import pytest
-from langfuse.types import (
+
+pytest.importorskip("langfuse.types", reason="optional [langfuse] extra not installed")
+from langfuse.types import (  # noqa: E402
     MaskOtelSpansParams,
     OtelSpanData,
     OtelSpanIdentifier,
 )
 
-from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
-from openagent_audit.tracing.drop_monitor import DropMonitor
-from openagent_audit.tracing.hook import build_mask_otel_spans, mask_attribute_map
-from tests.conftest import VALID_EMAIL, VALID_ID, VALID_PHONE
+from openagent_audit.pii.masking import MaskingPipeline, VaultWriter  # noqa: E402
+from openagent_audit.tracing.drop_monitor import DropMonitor  # noqa: E402
+from openagent_audit.tracing.hook import build_mask_otel_spans, mask_attribute_map  # noqa: E402
+from tests.conftest import VALID_EMAIL, VALID_ID, VALID_PHONE  # noqa: E402
 
 PREFIXES = ("langfuse.observation.input", "langfuse.observation.output", "gen_ai.prompt")
 
@@ -99,6 +101,29 @@ def test_mask_attribute_map_pure_helper(pipeline):
     )
     assert list(masked) == ["langfuse.observation.input"]
     assert VALID_EMAIL not in masked["langfuse.observation.input"]
+
+
+def test_hook_passes_trace_and_session_to_vault(pipeline, db):
+    """Vault rows must carry the trace/session context extracted from the
+    exported span, so retention can delete matching ciphertext rows."""
+    hook = build_mask_otel_spans(pipeline)
+    params = make_params(
+        {"s": {"langfuse.observation.input": f"电话{VALID_PHONE}",
+                "langfuse.session.id": "sess-9"}}
+    )
+    hook(params=params)
+    rows = list(db.iter_entities()) if hasattr(db, "iter_entities") else None
+    # fall back: query via the only entity we just wrote
+    import sqlite3
+
+    conn = sqlite3.connect(db._path)
+    try:
+        rows = conn.execute(
+            "SELECT trace_id, session_id FROM entity_ciphertext"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [("a" * 32, "sess-9")]
 
 
 def test_drop_monitor_snapshot():

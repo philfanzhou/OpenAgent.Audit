@@ -21,6 +21,7 @@ class DropMonitor:
     vault_write_failures: int = 0
     spans_patched: int = 0
     entities_masked: int = 0
+    restores_revealed: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record_batch_dropped(self, spans: int = 0) -> None:
@@ -40,6 +41,10 @@ class DropMonitor:
         with self._lock:
             self.vault_write_failures += 1
 
+    def record_restore_revealed(self) -> None:
+        with self._lock:
+            self.restores_revealed += 1
+
     def has_drops(self) -> bool:
         with self._lock:
             return self.dropped_batches > 0 or self.vault_write_failures > 0
@@ -52,4 +57,5 @@ class DropMonitor:
                 "vault_write_failures": self.vault_write_failures,
                 "spans_patched": self.spans_patched,
                 "entities_masked": self.entities_masked,
+                "restores_revealed": self.restores_revealed,
             }

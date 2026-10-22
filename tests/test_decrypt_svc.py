@@ -94,7 +94,74 @@ def test_unknown_entity_404(svc_client, svc_db):
         headers={"Authorization": "Bearer svc-secret"},
         json={"entity_id": "b" * 16, "request_id": request_id, "requested_by": "bob"},
     )
-    assert r.status_code == 404
+    # the request-object binding check fires before the entity lookup:
+    # one approved request must never unlock a different entity
+    assert r.status_code == 403
+
+
+def _utcnow_plus(*, minutes: int):
+    from datetime import datetime, timedelta, timezone
+
+    return datetime.now(timezone.utc) + timedelta(minutes=minutes)
+
+
+def test_request_object_mismatch_rejected(svc_client, svc_db, cipher):
+    """A second entity in the vault cannot be decrypted via a request that
+    covers only the first one (composable-privilege regression)."""
+    svc_db.insert_entities([
+        {"entity_id": "b" * 16, "entity_type": "EMAIL_ADDRESS",
+         "ciphertext": cipher.seal("secret@example.com", aad=("b" * 16).encode()),
+         "trace_id": "t1", "session_id": "s1"},
+    ])
+    request_id = _approved_request(svc_db, "a" * 16)
+    r = svc_client.post(
+        "/v1/decrypt",
+        headers={"Authorization": "Bearer svc-secret"},
+        json={"entity_id": "b" * 16, "request_id": request_id, "requested_by": "bob"},
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"] == "restore request does not cover this object"
+
+
+def test_media_endpoint_rejects_entity_request(svc_client, svc_db):
+    request_id = _approved_request(svc_db, "a" * 16)
+    r = svc_client.post(
+        "/v1/decrypt-media",
+        headers={"Authorization": "Bearer svc-secret"},
+        json={"key": "agent-media/x.bin", "request_id": request_id, "requested_by": "bob"},
+    )
+    assert r.status_code == 403
+
+
+def test_fulfilled_request_re_decrypt_within_ttl(svc_client, svc_db):
+    req = RestoreRequest(
+        id="req-fulfil1", object_type="entity", object_id="a" * 16,
+        reason="复查", requested_by="bob", status=RestoreStatus.FULFILLED,
+        approver="carol", reveal_expires_at=_utcnow_plus(minutes=5),
+    )
+    svc_db.insert_restore_request(req)
+    r = svc_client.post(
+        "/v1/decrypt",
+        headers={"Authorization": "Bearer svc-secret"},
+        json={"entity_id": "a" * 16, "request_id": req.id, "requested_by": "bob"},
+    )
+    assert r.status_code == 200
+
+
+def test_fulfilled_request_expired_410(svc_client, svc_db):
+    """Defense in depth: TTL is enforced here too, not only by audit-api."""
+    req = RestoreRequest(
+        id="req-expired1", object_type="entity", object_id="a" * 16,
+        reason="复查", requested_by="bob", status=RestoreStatus.FULFILLED,
+        approver="carol", reveal_expires_at=_utcnow_plus(minutes=-1),
+    )
+    svc_db.insert_restore_request(req)
+    r = svc_client.post(
+        "/v1/decrypt",
+        headers={"Authorization": "Bearer svc-secret"},
+        json={"entity_id": "a" * 16, "request_id": req.id, "requested_by": "bob"},
+    )
+    assert r.status_code == 410
 
 
 def test_every_decrypt_audited(svc_client, svc_db):

@@ -258,6 +258,9 @@ class PostgresAuditDatabase:
                 value = value.value
             sets.append(f"{col} = %s")
             params.append(value)
+        if not sets:
+            # nothing to update — do not emit invalid SQL ("UPDATE ... SET WHERE")
+            return self.get_restore_request(request_id)
         params.append(request_id)
         with self._connect() as conn:
             conn.execute(

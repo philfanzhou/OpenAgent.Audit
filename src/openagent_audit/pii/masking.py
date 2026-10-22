@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Sequence
@@ -104,20 +105,34 @@ class ProtectResult:
     entities: tuple[EntityRecord, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class _Detection:
+    """Cached detection outcome. Only positions, type and mask are cached —
+    ``entity_id`` and ciphertext are regenerated on every call so each trace
+    gets fresh random identifiers and fresh randomized ciphertext (proposal
+    §08: 编号随机生成、同一实体每次加密结果都不同)."""
+
+    start: int
+    end: int
+    entity_type: str
+    raw: str
+    mask: str
+
+
 class _MaskingCache:
     def __init__(self, maxsize: int) -> None:
         self._maxsize = maxsize
         self._lock = threading.Lock()
-        self._data: OrderedDict[str, ProtectResult] = OrderedDict()
+        self._data: OrderedDict[str, tuple[_Detection, ...]] = OrderedDict()
 
-    def get(self, key: str) -> ProtectResult | None:
+    def get(self, key: str) -> tuple[_Detection, ...] | None:
         with self._lock:
             if key in self._data:
                 self._data.move_to_end(key)
                 return self._data[key]
             return None
 
-    def put(self, key: str, value: ProtectResult) -> None:
+    def put(self, key: str, value: tuple[_Detection, ...]) -> None:
         with self._lock:
             self._data[key] = value
             self._data.move_to_end(key)
@@ -134,12 +149,14 @@ class VaultWriter:
 
     def write(self, rows: Sequence[Mapping[str, object]]) -> None:
         last_error: Exception | None = None
-        for _ in range(self._attempts):
+        for attempt in range(self._attempts):
             try:
                 self._vault.insert_entities(list(rows))
                 return
             except Exception as exc:  # noqa: BLE001 - retried below
                 last_error = exc
+                if attempt + 1 < self._attempts:
+                    time.sleep(min(0.5 * (2**attempt), 4.0))  # bounded backoff
         raise RuntimeError(f"vault write failed after {self._attempts} attempts") from last_error
 
 
@@ -175,35 +192,44 @@ class MaskingPipeline:
         if not text:
             return ProtectResult(masked_text=text, entities=())
         key = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
+        detections = self._cache.get(key)
+        if detections is None:
+            # Expensive part (regex / Presidio NER) — cached per text hash
+            # (proposal §11 性能提示). Sealing stays per-call.
+            detections = tuple(
+                _Detection(
+                    start=span.start,
+                    end=span.end,
+                    entity_type=span.entity_type,
+                    raw=text[span.start : span.end],
+                    mask=mask_value(span.entity_type, text[span.start : span.end], self._rules),
+                )
+                for span in self._engine.detect(text)
+            )
+            self._cache.put(key, detections)
 
-        spans = self._engine.detect(text)
         pieces: list[str] = []
         records: list[EntityRecord] = []
         last = 0
-        for span in spans:
-            raw = text[span.start : span.end]
+        for det in detections:
             entity_id = secrets.token_hex(8)  # random, never derived from the value
-            mask = mask_value(span.entity_type, raw, self._rules)
             ciphertext = ""
             if self._cipher is not None:
-                ciphertext = self._cipher.seal(raw.encode("utf-8"), aad=entity_id.encode("ascii"))
-            pieces.append(text[last : span.start])
-            pieces.append(f"⟦{span.entity_type}#{entity_id}|{mask}⟧")
+                ciphertext = self._cipher.seal(det.raw.encode("utf-8"), aad=entity_id.encode("ascii"))
+            pieces.append(text[last : det.start])
+            pieces.append(f"⟦{det.entity_type}#{entity_id}|{det.mask}⟧")
             records.append(
                 EntityRecord(
                     entity_id=entity_id,
-                    entity_type=span.entity_type,
-                    value=raw,
-                    mask=mask,
+                    entity_type=det.entity_type,
+                    value=det.raw,
+                    mask=det.mask,
                     ciphertext=ciphertext,
-                    start=span.start,
-                    end=span.end,
+                    start=det.start,
+                    end=det.end,
                 )
             )
-            last = span.end
+            last = det.end
         pieces.append(text[last:])
         result = ProtectResult(masked_text="".join(pieces), entities=tuple(records))
 
@@ -222,7 +248,6 @@ class MaskingPipeline:
             )
         with self._count_lock:
             self.entities_masked += len(records)
-        self._cache.put(key, result)
         return result
 
     def stats(self) -> dict[str, int]:

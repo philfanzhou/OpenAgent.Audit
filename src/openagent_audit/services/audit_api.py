@@ -14,6 +14,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -141,6 +142,27 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         token = _bearer(request)
         return container.authenticator.require(token, permission)
 
+    def log_view(principal: Principal, action: str, object_type: str, object_id: str) -> None:
+        """Every audit-plane view lands in the append-only audit log
+        (proposal §08: 浏览与解密 100% 进入审计日志)."""
+        container.audit.append(
+            actor=principal.username, role=principal.role,
+            action=action, object_type=object_type, object_id=object_id,
+        )
+
+    def time_range(from_ts: str | None, to_ts: str | None) -> tuple[datetime | None, datetime | None]:
+        def parse(value: str | None, name: str) -> datetime | None:
+            if not value:
+                return None
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                raise HTTPException(
+                    status_code=422, detail=f"invalid {name}; expected ISO-8601 timestamp"
+                ) from None
+
+        return parse(from_ts, "from"), parse(to_ts, "to")
+
     def render(request: Request, template: str, **ctx) -> Response:
         principal = container.authenticator.resolve(request.cookies.get(_COOKIE_NAME))
         ctx.setdefault("principal", principal)
@@ -186,12 +208,32 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return {"sessions": sessions}
 
     @app.get("/v1/sessions/{session_id}")
-    def get_session(session_id: str, request: Request):
-        principal_of(request, VIEW_MASKED)
-        traces = container.trace_store.list_traces(session_id=session_id)
+    def get_session(session_id: str, request: Request, from_ts: str | None = None, to_ts: str | None = None):
+        principal = principal_of(request, VIEW_MASKED)
+        start, end = time_range(from_ts, to_ts)
+        traces = container.trace_store.list_traces(session_id=session_id, from_ts=start, to_ts=end)
         if not traces:
             raise HTTPException(status_code=404, detail="session not found")
+        log_view(principal, "SESSION_VIEWED", "session", session_id)
         return {"session_id": session_id, "traces": [_trace_dict(t) for t in traces]}
+
+    @app.get("/v1/traces")
+    def list_traces(
+        request: Request,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+    ):
+        """Audit search scope (proposal §08): userId / sessionId / time range
+        only — there is deliberately no reverse lookup by phone number or ID
+        card (entity ids are random, ciphertext is randomized)."""
+        principal_of(request, VIEW_MASKED)
+        start, end = time_range(from_ts, to_ts)
+        traces = container.trace_store.list_traces(
+            session_id=session_id, user_id=user_id, from_ts=start, to_ts=end
+        )
+        return {"traces": [_trace_summary(t) for t in traces]}
 
     @app.get("/v1/audit-log")
     def audit_log(request: Request, limit: int = 200, verify: bool = False):
@@ -263,6 +305,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     def reveal(request_id: str, request: Request):
         principal = principal_of(request, MANAGE_RESTORE)
         result = container.restore.reveal(request_id, actor=principal.username, role=principal.role)
+        container.drop_monitor.record_restore_revealed()
         return result
 
     @app.get("/v1/restore-requests/{request_id}/content")
@@ -288,6 +331,19 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         if container.pipeline_stats:
             payload["pipeline"] = container.pipeline_stats
         return payload
+
+    @app.get("/internal/metrics/prometheus")
+    def metrics_prometheus(request: Request):
+        """Prometheus exposition for the drop counters so ``dropped_batches > 0``
+        can alert (proposal §02 通路①: 丢弃数必须监控，大于 0 即告警).
+        Scrape config + alert rules: deploy/alerting/."""
+        principal_of(request, VIEW_METRICS)
+        snap = container.drop_monitor.snapshot()
+        lines = []
+        for name, value in snap.items():
+            if isinstance(value, (int, float)):
+                lines.append(f"# TYPE openagent_audit_{name} gauge\nopenagent_audit_{name} {value}")
+        return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     # -- web UI -----------------------------------------------------------------
     @app.get("/ui", response_class=HTMLResponse)
@@ -328,11 +384,15 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         )
 
     @app.get("/ui/sessions/{session_id}", response_class=HTMLResponse)
-    def ui_session_detail(session_id: str, request: Request):
+    def ui_session_detail(
+        session_id: str, request: Request, from_ts: str | None = None, to_ts: str | None = None
+    ):
         principal = ui_principal(request, VIEW_MASKED)
-        traces = container.trace_store.list_traces(session_id=session_id)
+        start, end = time_range(from_ts, to_ts)
+        traces = container.trace_store.list_traces(session_id=session_id, from_ts=start, to_ts=end)
         if not traces:
             raise HTTPException(status_code=404, detail="session not found")
+        log_view(principal, "SESSION_VIEWED", "session", session_id)
         return render(
             request, "session_detail.html", principal=principal,
             session_id=session_id, traces=[_trace_dict(t) for t in traces],
@@ -405,6 +465,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 # ---------------------------------------------------------------------------
 # serialization helpers
 # ---------------------------------------------------------------------------
+
+
+def _trace_summary(t) -> dict:
+    """Accept both TraceRecord (local store) and raw Langfuse API dicts."""
+    if isinstance(t, dict):
+        return {
+            "trace_id": t.get("id"),
+            "session_id": t.get("sessionId"),
+            "user_id": t.get("userId"),
+            "name": t.get("name"),
+            "timestamp": str(t.get("timestamp")),
+        }
+    return {
+        "trace_id": t.trace_id,
+        "session_id": t.session_id,
+        "user_id": t.user_id,
+        "name": t.name,
+        "timestamp": str(t.timestamp),
+    }
 
 
 def _trace_dict(t) -> dict:

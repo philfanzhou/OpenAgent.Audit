@@ -55,6 +55,15 @@ class TestLocalTraceStore:
         assert store.get_trace("old") is None
         assert store.get_trace("new") is not None
 
+    def test_list_traces_time_range(self):
+        store = LocalTraceStore()
+        store.upsert_trace(trace("early", "s", "u", NOW - timedelta(days=5)))
+        store.upsert_trace(trace("late", "s", "u", NOW + timedelta(days=5)))
+        got = store.list_traces(from_ts=NOW - timedelta(days=1), to_ts=NOW + timedelta(days=1))
+        assert [t.trace_id for t in got] == []
+        got = store.list_traces(from_ts=NOW - timedelta(days=6), to_ts=NOW)
+        assert [t.trace_id for t in got] == ["early"]
+
 
 class TestLangfuseTraceStore:
     def test_list_and_delete_via_mock_api(self):
@@ -81,3 +90,18 @@ class TestLangfuseTraceStore:
 
         deleted = store.delete_older_than(NOW)
         assert deleted == ["t-1", "t-2"]
+
+    def test_time_range_params_forwarded(self):
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(200, json={"data": []})
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
+        )
+        store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
+        store.list_traces(from_ts=NOW - timedelta(minutes=1), to_ts=NOW)
+        assert "fromTimestamp" in captured["params"]
+        assert "toTimestamp" in captured["params"]
