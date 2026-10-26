@@ -125,6 +125,7 @@ def test_full_plane(world):
 
     AUD = {"Authorization": "Bearer tok-auditor"}
     LEAD = {"Authorization": "Bearer tok-lead"}
+    DEV = {"Authorization": "Bearer tok-dev"}
     LEAD2 = {"Authorization": "Bearer tok-lead2"}
 
     # 1. audit browse: masks only — no plaintext, no base64, no ciphertext
@@ -169,8 +170,8 @@ def test_full_plane(world):
     for event in world["loki"].events:  # alerting copies never carry values
         assert "13812345678" not in json.dumps(event, ensure_ascii=False)
 
-    # 5. metrics: no drops anywhere on the write path
-    metrics = client.get("/internal/metrics", headers=AUD).json()
+    # 5. metrics: no drops anywhere on the write path (developer-only endpoint)
+    metrics = client.get("/internal/metrics", headers=DEV).json()
     assert metrics["drops"]["dropped_batches"] == 0
 
 

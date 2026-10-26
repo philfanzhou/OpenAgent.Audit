@@ -205,14 +205,29 @@ class SQLiteAuditDatabase:
             prev_hash=prev_hash, entry_hash=eh,
         )
 
-    def list_audit(self, limit: int = 200, before_seq: int | None = None) -> list[AuditEntry]:
+    def list_audit(
+        self,
+        limit: int = 200,
+        before_seq: int | None = None,
+        q: str | None = None,
+        offset: int = 0,
+    ) -> list[AuditEntry]:
         query = "SELECT * FROM audit_log"
         params: list[object] = []
+        clauses: list[str] = []
         if before_seq is not None:
-            query += " WHERE seq < ?"
+            clauses.append("seq < ?")
             params.append(before_seq)
-        query += " ORDER BY seq DESC LIMIT ?"
-        params.append(limit)
+        if q:
+            clauses.append(
+                "(actor LIKE ? OR action LIKE ? OR object_type LIKE ? OR object_id LIKE ? OR role LIKE ?)"
+            )
+            like = f"%{q}%"
+            params += [like, like, like, like, like]
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY seq DESC LIMIT ? OFFSET ?"
+        params += [limit, offset]
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._audit_row(r) for r in rows]
@@ -221,6 +236,25 @@ class SQLiteAuditDatabase:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM audit_log ORDER BY seq ASC").fetchall()
         return [self._audit_row(r) for r in rows]
+
+    def count_entities(self) -> int:
+        with self._connect() as conn:
+            (n,) = conn.execute("SELECT COUNT(*) FROM entity_ciphertext").fetchone()
+        return int(n)
+
+    def count_audit_entries(self, q: str | None = None) -> int:
+        query = "SELECT COUNT(*) FROM audit_log"
+        params: list[object] = []
+        if q:
+            query += (
+                " WHERE actor LIKE ? OR action LIKE ? OR object_type LIKE ?"
+                " OR object_id LIKE ? OR role LIKE ?"
+            )
+            like = f"%{q}%"
+            params = [like, like, like, like, like]
+        with self._connect() as conn:
+            (n,) = conn.execute(query, params).fetchone()
+        return int(n)
 
     def list_audit_older_than(self, cutoff: datetime) -> list[AuditEntry]:
         with self._connect() as conn:
@@ -303,16 +337,55 @@ class SQLiteAuditDatabase:
             ).fetchone()
         return self._restore_row(row)
 
-    def list_restore_requests(self, status: RestoreStatus | None = None) -> list[RestoreRequest]:
+    def list_restore_requests(
+        self,
+        status: RestoreStatus | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[RestoreRequest]:
         query = "SELECT * FROM restore_request"
         params: list[object] = []
+        clauses: list[str] = []
         if status is not None:
-            query += " WHERE status = ?"
+            clauses.append("status = ?")
             params.append(status.value)
+        if q:
+            clauses.append(
+                "(object_id LIKE ? OR reason LIKE ? OR requested_by LIKE ? OR approver LIKE ? OR id LIKE ?)"
+            )
+            like = f"%{q}%"
+            params += [like, like, like, like, like]
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY created_at DESC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._restore_row(r) for r in rows]
+
+    def count_restore_requests(
+        self, status: RestoreStatus | None = None, q: str | None = None
+    ) -> int:
+        query = "SELECT COUNT(*) FROM restore_request"
+        params: list[object] = []
+        clauses: list[str] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.value)
+        if q:
+            clauses.append(
+                "(object_id LIKE ? OR reason LIKE ? OR requested_by LIKE ? OR approver LIKE ? OR id LIKE ?)"
+            )
+            like = f"%{q}%"
+            params += [like, like, like, like, like]
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._connect() as conn:
+            (n,) = conn.execute(query, params).fetchone()
+        return int(n)
 
     @staticmethod
     def _restore_row(row: sqlite3.Row | None) -> RestoreRequest | None:

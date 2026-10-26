@@ -26,7 +26,9 @@ def test_parse_users_rejects_bad_entries():
 def test_defaults_are_conservative():
     s = Settings.from_env({})
     assert s.trace_retention_days == 90
-    assert s.reveal_ttl_minutes == 10
+    assert s.reveal_ttl_minutes == 5
+    assert s.auth_provider == "static"
+    assert s.auth_introspect_url == ""
     assert s.pii_backend == "rules"
     assert s.loki_url == ""  # fan-out disabled unless configured
     assert s.decrypt_svc_url == ""

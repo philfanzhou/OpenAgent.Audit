@@ -33,6 +33,7 @@ from openagent_audit.services.auth import (
     VIEW_MASKED,
     VIEW_METRICS,
     MANAGE_RESTORE,
+    load_authenticator,
 )
 from openagent_audit.services.audit_log_service import AuditLogService
 from openagent_audit.services.decrypt_client import HttpDecryptService, InProcessDecryptService
@@ -93,13 +94,17 @@ def build_container(settings: Settings) -> AppContainer:
         )
     else:
         trace_store = LocalTraceStore()
+        if settings.demo_seed:
+            from openagent_audit.services.demo_seed import seed_demo_data
+
+            seed_demo_data(settings, trace_store, db)
 
     return AppContainer(
         settings=settings,
         db=db,
         audit=audit,
         restore=restore,
-        authenticator=Authenticator(settings.users),
+        authenticator=load_authenticator(settings),
         trace_store=trace_store,
         object_store=object_store,
     )
@@ -150,6 +155,11 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             action=action, object_type=object_type, object_id=object_id,
         )
 
+    def page_args(page: int, page_size: int, max_size: int = 100) -> tuple[int, int]:
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), max_size)
+        return page, page_size
+
     def time_range(from_ts: str | None, to_ts: str | None) -> tuple[datetime | None, datetime | None]:
         def parse(value: str | None, name: str) -> datetime | None:
             if not value:
@@ -196,16 +206,59 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     def healthz() -> dict:
         return {"ok": True, "service": "audit-api", "env": container.settings.env}
 
+    # -- current principal (SPA session bootstrap) ------------------------------
+    @app.get("/v1/me")
+    def me(request: Request):
+        # Identity resolution only — available to every authenticated principal
+        # regardless of role, so the SPA can render the role badge.
+        token = _bearer(request)
+        principal = container.authenticator.resolve(token)
+        if principal is None:
+            raise AuthenticationError(
+                "认证失败：访问令牌缺失或无效（missing or invalid bearer token），请重新登录。"
+            )
+        return {"username": principal.username, "role": principal.role}
+
     # -- JSON API ---------------------------------------------------------------
     @app.get("/v1/sessions")
-    def list_sessions(request: Request):
+    def list_sessions(
+        request: Request,
+        page: int = 1,
+        page_size: int = 10,
+        q: str | None = None,
+        include_demo: bool = False,
+    ):
+        """Paged + searchable session list (session_id / user_id / agent tag).
+
+        Demo sessions (``sess-demo-*``) are hidden automatically as soon as
+        real conversations exist, so connecting the OpenAgent platform never
+        mixes synthetic rows into production views; pass
+        ``include_demo=true`` to see them anyway."""
         principal_of(request, VIEW_MASKED)
+        page, size = page_args(page, page_size)
         sessions = (
             container.trace_store.list_sessions()
             if hasattr(container.trace_store, "list_sessions")
             else []
         )
-        return {"sessions": sessions}
+        from openagent_audit.services.demo_seed import is_demo_session
+
+        has_real = any(not is_demo_session(s["session_id"]) for s in sessions)
+        if has_real and not include_demo:
+            sessions = [s for s in sessions if not is_demo_session(s["session_id"])]
+        if q:
+            needle = q.lower()
+            sessions = [
+                s for s in sessions
+                if needle in s["session_id"].lower()
+                or needle in s["user_id"].lower()
+                or any(needle in t.lower() for t in s.get("agent_tags", []))
+            ]
+        total = len(sessions)
+        start = (page - 1) * size
+        return {"sessions": sessions[start : start + size],
+                "total": total, "page": page, "page_size": size,
+                "demo_hidden": has_real and not include_demo}
 
     @app.get("/v1/sessions/{session_id}")
     def get_session(session_id: str, request: Request, from_ts: str | None = None, to_ts: str | None = None):
@@ -236,9 +289,20 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return {"traces": [_trace_summary(t) for t in traces]}
 
     @app.get("/v1/audit-log")
-    def audit_log(request: Request, limit: int = 200, verify: bool = False):
+    def audit_log(
+        request: Request,
+        page: int = 1,
+        page_size: int = 10,
+        q: str | None = None,
+        verify: bool = False,
+    ):
+        """Paged audit-log read (search: actor/action/object/role). ``verify``
+        runs the full hash-chain check independent of paging."""
         principal_of(request, VIEW_AUDIT_LOG)
-        entries = container.audit.list_entries(limit=min(limit, 1000))
+        page, size = page_args(page, page_size)
+        entries = container.db.list_audit(
+            limit=size, q=q, offset=(page - 1) * size
+        )
         payload = {
             "entries": [
                 {
@@ -247,7 +311,10 @@ def create_audit_app(container: AppContainer) -> FastAPI:
                     "detail": e.detail,
                 }
                 for e in entries
-            ]
+            ],
+            "total": container.db.count_audit_entries(q=q),
+            "page": page,
+            "page_size": size,
         }
         if verify:
             payload["verification"] = container.audit.verify()
@@ -268,12 +335,28 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return _request_dict(req)
 
     @app.get("/v1/restore-requests")
-    def list_restore_requests(request: Request, status: str | None = None):
+    def list_restore_requests(
+        request: Request,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 10,
+        q: str | None = None,
+    ):
+        """Paged + searchable restore requests (id/object/reason/people)."""
         principal_of(request, VIEW_AUDIT_LOG)
         from openagent_audit.vault.models import RestoreStatus
 
         status_filter = RestoreStatus(status) if status else None
-        return {"requests": [_request_dict(r) for r in container.restore.list(status_filter)]}
+        page, size = page_args(page, page_size)
+        requests = container.db.list_restore_requests(
+            status=status_filter, q=q, limit=size, offset=(page - 1) * size
+        )
+        return {
+            "requests": [_request_dict(r) for r in requests],
+            "total": container.db.count_restore_requests(status=status_filter, q=q),
+            "page": page,
+            "page_size": size,
+        }
 
     @app.get("/v1/restore-requests/{request_id}")
     def get_restore_request(request_id: str, request: Request):
@@ -330,6 +413,14 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         payload = {"drops": container.drop_monitor.snapshot()}
         if container.pipeline_stats:
             payload["pipeline"] = container.pipeline_stats
+        payload["inventory"] = _build_inventory(container)
+        payload["config"] = {
+            "reveal_ttl_minutes": container.settings.reveal_ttl_minutes,
+            "trace_retention_days": container.settings.trace_retention_days,
+            "audit_archive_after_days": container.settings.audit_archive_after_days,
+            "trace_store": container.settings.trace_store,
+            "pii_backend": container.settings.pii_backend,
+        }
         return payload
 
     @app.get("/internal/metrics/prometheus")
@@ -484,6 +575,42 @@ def _trace_summary(t) -> dict:
         "name": t.name,
         "timestamp": str(t.timestamp),
     }
+
+
+def _build_inventory(container: AppContainer) -> dict:
+    """Audit-domain stocktaking for the developer/admin metrics view."""
+    from openagent_audit.vault.models import RestoreStatus
+
+    inventory: dict = {}
+    try:  # vault + audit log (SQLite exposes _path; Postgres path shared below)
+        inventory["vault_entities"] = container.db.count_entities()
+    except Exception:
+        inventory["vault_entities"] = None
+    try:
+        inventory["audit_entries"] = container.db.count_audit_entries()
+    except Exception:
+        inventory["audit_entries"] = None
+    try:
+        by_status: dict[str, int] = {}
+        for status in RestoreStatus:
+            by_status[status.value] = sum(
+                1 for r in container.restore.list(status)
+            )
+        inventory["restore_requests"] = by_status
+    except Exception:
+        inventory["restore_requests"] = None
+    try:
+        if hasattr(container.trace_store, "list_sessions"):
+            sessions = container.trace_store.list_sessions()
+            inventory["sessions"] = len(sessions)
+            inventory["traces"] = sum(s.get("trace_count", 0) for s in sessions)
+        else:
+            inventory["sessions"] = None
+            inventory["traces"] = None
+    except Exception:
+        inventory["sessions"] = None
+        inventory["traces"] = None
+    return inventory
 
 
 def _trace_dict(t) -> dict:
