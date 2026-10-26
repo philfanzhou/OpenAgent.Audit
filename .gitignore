@@ -8,3 +8,10 @@ htmlcov/
 data/
 keys/
 .env
+
+frontend/node_modules/
+frontend/dist/
+src/openagent_audit.egg-info/
+data/
+keys/
+

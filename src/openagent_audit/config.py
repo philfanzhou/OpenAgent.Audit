@@ -43,6 +43,13 @@ class Settings:
     # Audit-plane users: AUDIT_USERS="token:alice:auditor,token2:bob:compliance_lead"
     users: tuple[UserEntry, ...] = ()
 
+    # Identity source (reserved for the OpenAgent platform integration):
+    # "static" uses AUDIT_USERS above; "http" resolves tokens against the
+    # platform's introspection endpoint (docs/openagent-integration.md).
+    auth_provider: str = "static"
+    auth_introspect_url: str = ""
+    auth_cache_seconds: float = 60.0
+
     # Key custody: "local" (PEM file held only by decrypt-svc) or "kms" (AWS KMS).
     key_provider: str = "local"
     local_private_key_path: str = ""
@@ -77,11 +84,15 @@ class Settings:
     # Retention / compliance knobs (proposal §10-11; confirm with compliance).
     trace_retention_days: int = 90
     audit_archive_after_days: int = 30
-    reveal_ttl_minutes: int = 10
+    reveal_ttl_minutes: int = 5
 
     # PII detection backend: "rules" (built-in, no external model) or
     # "presidio" (Microsoft Presidio + Chinese spaCy model, proposal §11.3).
     pii_backend: str = "rules"
+
+    # Demo seeding: with AUDIT_TRACE_STORE=local, pre-fill sample masked
+    # conversations at startup (local manual testing only — never production).
+    demo_seed: bool = False
 
     # Which agent processes export through this process (used by tooling).
     masking_prefixes: tuple[str, ...] = field(
@@ -102,6 +113,9 @@ class Settings:
             audit_db_url=e.get("AUDIT_DB_URL", "sqlite:///./data/audit.db"),
             service_token=e.get("AUDIT_SERVICE_TOKEN", "dev-service-token"),
             users=_parse_users(e.get("AUDIT_USERS", "")),
+            auth_provider=e.get("AUDIT_AUTH_PROVIDER", "static"),
+            auth_introspect_url=e.get("AUDIT_AUTH_INTROSPECT_URL", ""),
+            auth_cache_seconds=float(e.get("AUDIT_AUTH_CACHE_SECONDS", "60")),
             key_provider=e.get("AUDIT_KEY_PROVIDER", "local"),
             local_private_key_path=e.get("AUDIT_PRIVATE_KEY_PATH", ""),
             local_private_key_passphrase=e.get("AUDIT_PRIVATE_KEY_PASSPHRASE", ""),
@@ -122,8 +136,9 @@ class Settings:
             loki_url=e.get("LOKI_URL", ""),
             trace_retention_days=int(e.get("AUDIT_TRACE_RETENTION_DAYS", "90")),
             audit_archive_after_days=int(e.get("AUDIT_ARCHIVE_AFTER_DAYS", "30")),
-            reveal_ttl_minutes=int(e.get("AUDIT_REVEAL_TTL_MINUTES", "10")),
+            reveal_ttl_minutes=int(e.get("AUDIT_REVEAL_TTL_MINUTES", "5")),
             pii_backend=e.get("AUDIT_PII_BACKEND", "rules"),
+            demo_seed=e.get("AUDIT_DEMO_SEED", "").lower() in ("1", "true", "yes", "on"),
         )
 
     def user_for_token(self, token: str) -> UserEntry | None:

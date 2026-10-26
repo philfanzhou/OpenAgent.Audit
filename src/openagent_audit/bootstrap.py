@@ -58,6 +58,19 @@ def build_cipher(settings: Settings, key_provider: KeyProvider | None = None) ->
     return cipher
 
 
+def build_langfuse_client_or_none(settings: Settings, pipeline, drop_monitor=None, **client_kwargs):
+    """``build_langfuse_client`` that returns ``None`` when the optional
+    ``langfuse`` extra is absent (lets callers degrade or raise their own
+    error message)."""
+    try:
+        import langfuse  # noqa: F401
+    except ImportError:
+        return None
+    from openagent_audit.tracing.langfuse_setup import build_langfuse_client
+
+    return build_langfuse_client(settings, pipeline, drop_monitor, **client_kwargs)
+
+
 def build_object_store(settings: Settings):
     if settings.object_store == "s3":
         from openagent_audit.media.objectstore import S3ObjectStore

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from openagent_audit.config import UserEntry
 from openagent_audit.services.audit_api import create_audit_app
-from tests.conftest import VALID_BANK, seed_masked_conversation
+from tests.conftest import PASSPHRASE, VALID_BANK, seed_masked_conversation
 
 AUD = {"Authorization": "Bearer tok-auditor"}
 LEAD = {"Authorization": "Bearer tok-lead"}
@@ -44,11 +45,58 @@ def test_trace_search_time_range_and_user(api_client, seeded):
     assert bad.status_code == 422
 
 
+def test_me_endpoint(api_client):
+    r = api_client.get("/v1/me", headers=AUD)
+    assert r.status_code == 200
+    assert r.json() == {"username": "alice", "role": "auditor"}
+    assert api_client.get("/v1/me").status_code == 401
+
+
+def test_demo_seed_populates_local_store(tmp_path, keypair):
+    """AUDIT_DEMO_SEED=1 + local trace store -> sample masked conversations."""
+    from openagent_audit.config import Settings
+    from openagent_audit.services.audit_api import build_container
+
+    public_pem, private_pem = keypair
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    (key_dir / "audit_private_key.pem").write_bytes(private_pem)
+    (key_dir / "audit_public_key.pem").write_bytes(public_pem)
+    settings = Settings(
+        audit_db_url=f"sqlite:///{(tmp_path / 'audit.db')}",
+        service_token="svc-token-123",
+        users=(UserEntry("tok-a", "alice", "auditor"),),
+        local_private_key_path=str(key_dir / "audit_private_key.pem"),
+        local_private_key_passphrase=PASSPHRASE.decode(),
+        public_key_path=str(key_dir / "audit_public_key.pem"),
+        trace_store="local",
+        demo_seed=True,
+    )
+    container = build_container(settings)
+    sessions = container.trace_store.list_sessions()
+    assert len(sessions) == 26  # 2 curated + 24 generated for pagination demo
+    # seeded data went through the masking pipeline: no plaintext phone numbers
+    detail = container.trace_store.list_traces(session_id="sess-demo-1001")
+    assert detail
+    serialized = str(detail)
+    assert "13812345678" not in serialized
+    assert "138****5678" in serialized
+
+
+def test_demo_seed_respected_only_for_local(tmp_path):
+    from openagent_audit.config import Settings
+
+    assert Settings(demo_seed=True).demo_seed is True
+    assert Settings.from_env({"AUDIT_DEMO_SEED": "1"}).demo_seed is True
+    assert Settings.from_env({}).demo_seed is False
+
+
 def test_metrics_prometheus_exposition(api_client, container):
     container.drop_monitor.record_batch_dropped()
-    resp = api_client.get("/internal/metrics/prometheus", headers=AUD)
+    resp = api_client.get("/internal/metrics/prometheus", headers=DEV)
     assert resp.status_code == 200
     assert "openagent_audit_dropped_batches 1" in resp.text
+    assert api_client.get("/internal/metrics/prometheus", headers=AUD).status_code == 403
 
 
 def test_healthz(api_client):
@@ -65,10 +113,27 @@ def test_unknown_token_401(api_client, seeded):
     assert api_client.get("/v1/sessions", headers={"Authorization": "Bearer nope"}).status_code == 401
 
 
-def test_developer_denied_audit_plane(api_client, seeded):
-    # developers use the Langfuse UI, not audit-web (proposal §08 role table)
-    resp = api_client.get("/v1/sessions", headers=DEV)
-    assert resp.status_code == 403
+def test_developer_is_read_only_admin(api_client, container, seeded):
+    """Developer = read-only admin: full visibility, zero mutation."""
+    # can read sessions, audit log and metrics
+    assert api_client.get("/v1/sessions", headers=DEV).status_code == 200
+    assert api_client.get("/v1/audit-log?verify=true", headers=DEV).status_code == 200
+    metrics = api_client.get("/internal/metrics", headers=DEV)
+    assert metrics.status_code == 200
+    body = metrics.json()
+    assert "inventory" in body and "config" in body
+    assert body["inventory"]["vault_entities"] >= 1
+    assert body["config"]["reveal_ttl_minutes"] == 5
+    # ...but can never mutate: no restore request/approve/reveal
+    entity = api_client.get("/v1/sessions/sess-1001", headers=DEV)  # read ok
+    assert entity.status_code == 200
+    r = api_client.post("/v1/restore-requests", headers=DEV, json={
+        "object_type": "entity", "object_id": "a" * 16, "reason": "dev 不允许"})
+    assert r.status_code == 403
+    assert api_client.post("/v1/restore-requests/whatever00/approve",
+                           headers=DEV, json={}).status_code == 403
+    assert api_client.post("/v1/restore-requests/whatever00/reveal",
+                           headers=DEV).status_code == 403
 
 
 def test_auditor_views_masked_sessions(api_client, seeded):
@@ -97,7 +162,8 @@ def test_masked_trace_has_no_plaintext_or_ciphertext(api_client, container, seed
 
 
 def test_audit_log_requires_auditor_or_lead(api_client, seeded):
-    assert api_client.get("/v1/audit-log", headers=DEV).status_code == 403
+    # developer is a read-only admin and may read the audit log too
+    assert api_client.get("/v1/audit-log", headers=DEV).status_code == 200
     ok = api_client.get("/v1/audit-log?verify=true", headers=AUD)
     assert ok.status_code == 200
     assert ok.json()["verification"]["ok"] is True
@@ -159,11 +225,17 @@ def test_request_unknown_entity_404(api_client):
     assert r.status_code == 404
 
 
-def test_metrics_endpoint(api_client, container):
-    resp = api_client.get("/internal/metrics", headers=AUD)
+def test_metrics_endpoint_developer_only(api_client, container):
+    # metrics are operational data for developers only (auditor/lead denied)
+    assert api_client.get("/internal/metrics", headers=AUD).status_code == 403
+    assert api_client.get("/internal/metrics", headers=LEAD).status_code == 403
+    resp = api_client.get("/internal/metrics", headers=DEV)
     assert resp.status_code == 200
     assert "dropped_batches" in resp.json()["drops"]
-    assert api_client.get("/internal/metrics", headers=DEV).status_code == 200
+    # denial message is actionable, not a raw permission name
+    denied = api_client.get("/internal/metrics", headers=AUD)
+    assert "权限不足" in denied.json()["detail"]
+    assert "请联系系统管理员" in denied.json()["detail"]
 
 
 def test_media_content_download(api_client, container, cipher):

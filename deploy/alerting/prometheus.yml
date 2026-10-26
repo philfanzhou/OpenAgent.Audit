@@ -4,7 +4,7 @@ scrape_configs:
   - job_name: openagent-audit
     metrics_path: /internal/metrics/prometheus
     scrape_interval: 30s
-    # Bearer token of a principal holding VIEW_METRICS (auditor or developer).
+    # Bearer token of a developer principal (the only role holding VIEW_METRICS).
     authorization:
       type: Bearer
       credentials: "set-a-metrics-token-here"

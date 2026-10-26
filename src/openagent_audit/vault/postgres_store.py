@@ -177,7 +177,13 @@ class PostgresAuditDatabase:
             prev_hash=prev_hash, entry_hash=eh,
         )
 
-    def list_audit(self, limit: int = 200, before_seq: int | None = None) -> list[AuditEntry]:
+    def list_audit(
+        self,
+        limit: int = 200,
+        before_seq: int | None = None,
+        q: str | None = None,
+        offset: int = 0,
+    ) -> list[AuditEntry]:
         query = (
             "SELECT seq, ts, actor, role, action, object_type, object_id, detail, "
             "prev_hash, entry_hash FROM audit_log"
@@ -186,8 +192,13 @@ class PostgresAuditDatabase:
         if before_seq is not None:
             query += " WHERE seq < %s"
             params.append(before_seq)
-        query += " ORDER BY seq DESC LIMIT %s"
-        params.append(limit)
+        if q:
+            clauses = "(actor LIKE %s OR action LIKE %s OR object_type LIKE %s OR object_id LIKE %s OR role LIKE %s)"
+            like = f"%{q}%"
+            query += (" WHERE " if before_seq is None else " AND ") + clauses
+            params += [like, like, like, like, like]
+        query += " ORDER BY seq DESC LIMIT %s OFFSET %s"
+        params += [limit, offset]
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [
@@ -213,6 +224,34 @@ class PostgresAuditDatabase:
             )
             for r in rows
         ]
+
+    def count_entities(self, q: str | None = None) -> int:
+        query = "SELECT COUNT(*) FROM entity_ciphertext"
+        params: list[object] = []
+        if q:
+            query += (
+                " WHERE entity_id LIKE %s OR entity_type LIKE %s"
+                " OR trace_id LIKE %s OR session_id LIKE %s"
+            )
+            like = f"%{q}%"
+            params = [like, like, like, like]
+        with self._connect() as conn:
+            (n,) = conn.execute(query, params).fetchone()
+        return int(n)
+
+    def count_audit_entries(self, q: str | None = None) -> int:
+        query = "SELECT COUNT(*) FROM audit_log"
+        params: list[object] = []
+        if q:
+            query += (
+                " WHERE actor LIKE %s OR action LIKE %s OR object_type LIKE %s"
+                " OR object_id LIKE %s OR role LIKE %s"
+            )
+            like = f"%{q}%"
+            params = [like, like, like, like, like]
+        with self._connect() as conn:
+            (n,) = conn.execute(query, params).fetchone()
+        return int(n)
 
     def list_audit_older_than(self, cutoff: datetime) -> list[AuditEntry]:
         with self._connect() as conn:
@@ -285,17 +324,36 @@ class PostgresAuditDatabase:
             created_at=row[10], decided_at=row[11], reveal_expires_at=row[12],
         )
 
-    def list_restore_requests(self, status: RestoreStatus | None = None) -> list[RestoreRequest]:
+    def list_restore_requests(
+        self,
+        status: RestoreStatus | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[RestoreRequest]:
         query = (
             "SELECT id, object_type, object_id, reason, requested_by, trace_id, session_id, "
             "status, approver, decision_comment, created_at, decided_at, reveal_expires_at "
             "FROM restore_request"
         )
         params: list[object] = []
+        clauses: list[str] = []
         if status is not None:
-            query += " WHERE status = %s"
+            clauses.append("status = %s")
             params.append(status.value)
+        if q:
+            clauses.append(
+                "(object_id LIKE %s OR reason LIKE %s OR requested_by LIKE %s"
+                " OR approver LIKE %s OR id LIKE %s)"
+            )
+            like = f"%{q}%"
+            params += [like, like, like, like, like]
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY created_at DESC"
+        if limit is not None:
+            query += " LIMIT %s OFFSET %s"
+            params += [limit, offset]
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [
@@ -307,3 +365,25 @@ class PostgresAuditDatabase:
             )
             for r in rows
         ]
+
+    def count_restore_requests(
+        self, status: RestoreStatus | None = None, q: str | None = None
+    ) -> int:
+        query = "SELECT COUNT(*) FROM restore_request"
+        params: list[object] = []
+        clauses: list[str] = []
+        if status is not None:
+            clauses.append("status = %s")
+            params.append(status.value)
+        if q:
+            clauses.append(
+                "(object_id LIKE %s OR reason LIKE %s OR requested_by LIKE %s"
+                " OR approver LIKE %s OR id LIKE %s)"
+            )
+            like = f"%{q}%"
+            params += [like, like, like, like, like]
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._connect() as conn:
+            (n,) = conn.execute(query, params).fetchone()
+        return int(n)
