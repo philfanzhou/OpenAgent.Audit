@@ -123,7 +123,7 @@ def test_developer_is_read_only_admin(api_client, container, seeded):
     body = metrics.json()
     assert "inventory" in body and "config" in body
     assert body["inventory"]["vault_entities"] >= 1
-    assert body["config"]["reveal_ttl_minutes"] == 5
+    assert body["config"]["reveal_ttl_minutes"] == 60
     # ...but can never mutate: no restore request/approve/reveal
     entity = api_client.get("/v1/sessions/sess-1001", headers=DEV)  # read ok
     assert entity.status_code == 200

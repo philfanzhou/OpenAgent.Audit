@@ -99,6 +99,8 @@ def test_sessions_paged_and_searched(api_client, container, pipeline, trace_stor
     body = r.json()
     assert body["total"] == 14
     assert len(body["sessions"]) == 10
+    # ordered by most recent activity first (B: 最近活跃倒序)
+    assert body["sessions"][0]["session_id"] == "sess-bulk-11"
 
     r2 = api_client.get("/v1/sessions", headers=DEV, params={"q": "alpha"})
     body2 = r2.json()
@@ -107,3 +109,41 @@ def test_sessions_paged_and_searched(api_client, container, pipeline, trace_stor
     r3 = api_client.get("/v1/sessions", headers=DEV, params={"q": "agent:bulk", "page": 2, "page_size": 10})
     body3 = r3.json()
     assert body3["total"] == 12 and len(body3["sessions"]) == 2
+
+
+def test_sessions_browse_blocked_over_threshold(api_client, container, pipeline, trace_store):
+    """A: beyond the browse threshold, unconditional listing is blocked until
+    the caller narrows with q / from_ts / agent."""
+    from datetime import datetime, timedelta, timezone
+    from openagent_audit.tracing.trace_store import TraceRecord
+    from openagent_audit.services.audit_api import BROWSE_THRESHOLD
+
+    container.trace_store = trace_store
+    now = datetime.now(timezone.utc)
+    for i in range(BROWSE_THRESHOLD + 1):
+        trace_store.upsert_trace(TraceRecord(
+            trace_id=f"tr-{i:04d}", session_id=f"sess-{i:04d}", user_id="usr_x",
+            agent_tag="agent:bulk", name="POST /agent/run",
+            timestamp=now - timedelta(minutes=BROWSE_THRESHOLD + 1 - i),
+        ))
+
+    # unconditional browse is blocked
+    r = api_client.get("/v1/sessions", headers=DEV)
+    body = r.json()
+    assert body["browse_blocked"] is True
+    assert body["total"] == BROWSE_THRESHOLD + 1
+    assert body["sessions"] == []
+
+    # any filter unlocks results
+    r2 = api_client.get("/v1/sessions", headers=DEV, params={"q": "sess-0001"})
+    assert r2.json()["browse_blocked"] is False
+    assert r2.json()["total"] == 1
+
+    r3 = api_client.get("/v1/sessions", headers=DEV,
+                        params={"from_ts": (now - timedelta(minutes=2)).isoformat()})
+    assert r3.json()["browse_blocked"] is False
+    assert r3.json()["total"] == 2  # the two most recent sessions
+
+    r4 = api_client.get("/v1/sessions", headers=DEV, params={"agent": "bulk"})
+    assert r4.json()["browse_blocked"] is False
+    assert r4.json()["total"] == BROWSE_THRESHOLD + 1

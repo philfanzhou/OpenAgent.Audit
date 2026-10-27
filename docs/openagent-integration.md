@@ -106,6 +106,46 @@ AUDIT_AUTH_CACHE_SECONDS=60
 
 ## 2. 会话数据接入（OpenAgent → audit 平台）
 
+### 2.0 .NET 后端接入方式（OpenAgent 实际形态，推荐）
+
+OpenAgent 后端是 .NET 8（Router → Engine.Host → Core），无法内嵌 Langfuse
+Python SDK。audit 平台为此提供 **Masking Gateway**（OTLP 脱敏网关）：
+OpenAgent 侧**只需改一个 OTLP 导出地址**，业务代码零改动。
+
+```text
+OpenAgent (OTEL_EXPORTER_OTLP_ENDPOINT=http://masking-gateway:8102)
+   │  OTLP/HTTP JSON（.NET 标准导出，协议不变）
+   ▼
+Masking Gateway（audit 平台组件，同集群部署）
+   ① 解析 OTLP spans → 对内容属性跑与 Python 路径完全相同的 PII 管线
+      （识别 → ⟦TYPE#随机编号|掩码⟧ + AES-256-GCM 信封加密 → 密文写密文表）
+   ② 从 span 属性映射标识符：conversation_id→langfuse.session.id、
+      user_id→langfuse.user.id、agent_id→langfuse.tag.agent
+   ③ 掩码后的 span 转发 Langfuse 原生 OTLP 端点（/api/public/otel/v1/traces）
+   ④ fail-closed：脱敏/密文入库失败 → 整批丢弃、绝不转发、计数告警
+```
+
+网关侧配置（docker-compose 已内置 `masking-gateway` 服务）：
+
+| 变量 | 说明 |
+|---|---|
+| `AUDIT_GATEWAY_TOKEN` | OpenAgent → 网关的 Bearer 令牌（必填） |
+| `AUDIT_GATEWAY_CONTENT_PREFIXES` | 需要脱敏的 span 属性键前缀（逗号分隔，默认覆盖 gen_ai.*/llm.*/content 等） |
+| `AUDIT_GATEWAY_SESSION_ATTRS` / `_USER_ATTRS` / `_AGENT_ATTRS` | 标识符属性候选键（默认已覆盖 openagent.conversation_id / user_id / agent.id） |
+
+OpenAgent 侧配置：
+
+```json
+{ "OpenTelemetry": { "OtlpEndpoint": "http://masking-gateway:8102" } }
+```
+
+信任边界说明：明文 span 会经网络到达网关（同集群、同信任域，与明文进入
+Langfuse worker 的假设等价），网关内存处理不落盘、Bearer 认证、fail-closed。
+这是对技术方案"进程内脱敏"的一处明示偏差，仅适用于非 Python Agent。
+
+**Python Agent 仍走原路径**（Langfuse Python SDK + mask_otel_spans 进程内
+脱敏）；两条路径共享同一套 PII 管线与密文表，掩码结果完全一致。
+
 ### 2.1 前置条件
 
 | 组件 | 说明 |
@@ -223,8 +263,8 @@ OpenAgent 后台/工单系统要嵌审计能力时，直接调 audit-api（同�
 ## 4. 常见问题
 
 **Q：为什么不能直接把明文会话 POST 给 audit 平台？**
-写入侧唯一通道是 SDK 埋点 + 导出线程脱敏，这是结构性的防旁路设计。开放明文
-REST 上报等于绕过脱敏管线。
+写入侧的脱敏是强制环节：Python Agent 在进程内脱敏，.NET Agent 经 Masking
+Gateway 在转发前脱敏。任何绕过这条管线直灌 Langfuse 的通道都不允许。
 
 **Q：接入后，本地的演示数据（sess-demo-*）会混进生产视图吗？**
 不会。演示数据仅在 `AUDIT_DEMO_SEED=1` 且本地存储为空时注入一次；一旦存在任何

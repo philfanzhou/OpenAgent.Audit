@@ -154,6 +154,30 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     # audit-api uses the audit_api DB role (no SELECT on ciphertext, by grant).
 
+  # ---- Masking Gateway (OTLP ingest for non-Python agents, e.g. OpenAgent) ---
+  masking-gateway:
+    build: .
+    image: openagent-audit:latest
+    depends_on:
+      audit-db: { condition: service_healthy }
+    ports: ["8102:8102"]
+    command: >
+      uvicorn openagent_audit.gateway.app:create_app
+      --host 0.0.0.0 --port 8102
+    environment:
+      AUDIT_DB_URL: postgresql://agent_writer:${AUDIT_DB_PASSWORD}@audit-db:5432/openagent_audit
+      AUDIT_PUBLIC_KEY_PATH: /keys/audit_public_key.pem
+      AUDIT_GATEWAY_TOKEN: ${AUDIT_GATEWAY_TOKEN:?}
+      AUDIT_GATEWAY_CONTENT_PREFIXES: ${AUDIT_GATEWAY_CONTENT_PREFIXES:-}
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    volumes:
+      - ./keys:/keys:ro
+    # Non-Python agents (OpenAgent .NET) point OTEL_EXPORTER_OTLP_ENDPOINT at
+    # this service: it masks/seals with the same pipeline as the Python path,
+    # then forwards masked OTLP/JSON to Langfuse (fail-closed).
+
   # ---- Service logs + alerting copies ---------------------------------------
   loki:
     image: grafana/loki:3.5

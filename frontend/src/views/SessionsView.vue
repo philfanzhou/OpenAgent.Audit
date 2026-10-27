@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted } from "vue";
+import { ref, watch, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api.js";
 import Pager from "../components/Pager.vue";
 import SearchBox from "../components/SearchBox.vue";
@@ -9,18 +9,34 @@ const total = ref(0);
 const page = ref(1);
 const pageSize = 10;
 const q = ref("");
+const range = ref("");          // '' | '24h' | '7d' | '30d'
 const demoHidden = ref(false);
+const browseBlocked = ref(false);
+const browseThreshold = ref(200);
 const error = ref("");
 const loading = ref(true);
+let ticker = null;
+
+function fromTsIso() {
+  if (!range.value) return undefined;
+  const hours = range.value === "24h" ? 24 : range.value === "7d" ? 168 : 720;
+  return new Date(Date.now() - hours * 3600_000).toISOString();
+}
 
 async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const data = await api.sessions({ page: page.value, page_size: pageSize, q: q.value || undefined });
+    const data = await api.sessions({
+      page: page.value, page_size: pageSize,
+      q: q.value || undefined,
+      from_ts: fromTsIso(),
+    });
     sessions.value = data.sessions;
     total.value = data.total;
     demoHidden.value = !!data.demo_hidden;
+    browseBlocked.value = !!data.browse_blocked;
+    browseThreshold.value = data.browse_threshold ?? 200;
   } catch (e) {
     error.value = e.message;
   } finally {
@@ -28,8 +44,19 @@ async function load() {
   }
 }
 
-watch(q, () => { page.value = 1; load(); });
-onMounted(load);
+watch([q, range], () => { page.value = 1; load(); });
+onMounted(() => {
+  load();
+  ticker = setInterval(load, 30_000); // keep "最近活跃" fresh while browsing
+});
+onBeforeUnmount(() => { if (ticker) clearInterval(ticker); });
+
+const RANGES = [
+  { value: "", label: "全部时间" },
+  { value: "24h", label: "最近 24 小时" },
+  { value: "7d", label: "最近 7 天" },
+  { value: "30d", label: "最近 30 天" },
+];
 
 function fmt(ts) {
   return ts ? new Date(ts).toLocaleString("zh-CN") : "-";
@@ -47,10 +74,31 @@ function fmt(ts) {
       已接入真实数据：本地演示数据（sess-demo-*）已自动隐藏，需要查看可在地址栏加 include_demo=true。
     </p>
 
-    <p v-if="loading" class="text-slate-500">加载中…</p>
+    <!-- filters -->
+    <div class="flex items-center gap-2 mb-4 flex-wrap">
+      <div class="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+        <button v-for="r in RANGES" :key="r.value" @click="range = r.value"
+          class="px-3 py-1.5"
+          :class="range === r.value ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'">
+          {{ r.label }}
+        </button>
+      </div>
+    </div>
+
+    <!-- search-first: unconditional browsing disabled beyond threshold -->
+    <div v-if="browseBlocked"
+      class="rounded-xl bg-white shadow p-10 text-center mb-4">
+      <p class="text-lg font-semibold text-slate-700">会话量较大（共 {{ total }} 条）</p>
+      <p class="mt-2 text-sm text-slate-500 leading-relaxed">
+        超过直接浏览上限（{{ browseThreshold }} 条）。<br />
+        请使用上方搜索框输入关键词，或选择时间范围 / agent 标签缩小范围后查看。
+      </p>
+    </div>
+
+    <p v-else-if="loading" class="text-slate-500">加载中…</p>
     <p v-else-if="error" class="text-red-600">{{ error }}</p>
     <p v-else-if="!sessions.length" class="text-slate-500">
-      {{ q ? "没有匹配的会话。" : "暂无会话数据。" }}
+      {{ q || range ? "没有匹配的会话。" : "暂无会话数据。" }}
     </p>
 
     <template v-else>
