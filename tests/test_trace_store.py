@@ -105,3 +105,40 @@ class TestLangfuseTraceStore:
         store.list_traces(from_ts=NOW - timedelta(minutes=1), to_ts=NOW)
         assert "fromTimestamp" in captured["params"]
         assert "toTimestamp" in captured["params"]
+
+    def test_list_sessions_aggregates_and_paginates(self):
+        """list_sessions aggregates the paged traces API into session rows."""
+        page1 = [
+            {"id": f"b{i}", "sessionId": f"bulk-{i}", "userId": "u0", "timestamp": None, "tags": []}
+            for i in range(100)  # full page -> loop continues
+        ] + [
+            {"id": "t1", "sessionId": "s1", "userId": "u1", "timestamp": "2026-10-20T10:00:00Z",
+             "tags": ["agent:cs-bot"]},
+            {"id": "t2", "sessionId": "s1", "userId": "u1", "timestamp": "2026-10-20T10:05:00Z",
+             "tags": "agent:cs-bot"},
+        ]
+        pages = [page1, [
+            {"id": "t3", "sessionId": "s2", "userId": "u2", "timestamp": "2026-10-20T11:00:00Z",
+             "tags": []},
+        ]]  # short page -> last page
+        pages_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            page = int(request.url.params.get("page", "1"))
+            pages_seen.append(page)
+            data = pages[page - 1] if page <= len(pages) else []
+            return httpx.Response(200, json={"data": data})
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
+        )
+        store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
+        rows = store.list_sessions()
+        assert pages_seen == [1, 2]
+        assert len(rows) == 102  # 100 bulk + s1 + s2
+        by_id = {r["session_id"]: r for r in rows}
+        assert by_id["s1"]["trace_count"] == 2
+        assert by_id["s1"]["first_ts"] == datetime(2026, 10, 20, 10, 0, tzinfo=timezone.utc)
+        assert by_id["s1"]["last_ts"] == datetime(2026, 10, 20, 10, 5, tzinfo=timezone.utc)
+        assert by_id["s1"]["agent_tags"] == ["agent:cs-bot"]  # string tag coerced
+        assert by_id["s2"]["trace_count"] == 1

@@ -44,6 +44,11 @@ from openagent_audit.tracing.trace_store import LangfuseTraceStore, LocalTraceSt
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _COOKIE_NAME = "openagent_audit_session"
 
+# Search-first: unconditional browsing of the session list is allowed only up
+# to this many sessions; beyond it the UI demands a search/filter (proposal
+# review: 数万条会话下"无条件浏览"不是可用的审计工作流).
+BROWSE_THRESHOLD = 200
+
 _ENT_RE = re.compile(r"(⟦[^⟧]*⟧)")
 
 
@@ -226,16 +231,21 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         page: int = 1,
         page_size: int = 10,
         q: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        agent: str | None = None,
         include_demo: bool = False,
     ):
         """Paged + searchable session list (session_id / user_id / agent tag).
 
-        Demo sessions (``sess-demo-*``) are hidden automatically as soon as
-        real conversations exist, so connecting the OpenAgent platform never
-        mixes synthetic rows into production views; pass
-        ``include_demo=true`` to see them anyway."""
+        Search-first at scale: unconditional browsing is only allowed while
+        the session total stays at or below ``BROWSE_THRESHOLD``; beyond that
+        callers must narrow with ``q`` / ``from_ts`` / ``to_ts`` / ``agent``.
+        Sessions are ordered by most recent activity.
+        """
         principal_of(request, VIEW_MASKED)
         page, size = page_args(page, page_size)
+        start_ts, end_ts = time_range(from_ts, to_ts)
         sessions = (
             container.trace_store.list_sessions()
             if hasattr(container.trace_store, "list_sessions")
@@ -246,6 +256,19 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         has_real = any(not is_demo_session(s["session_id"]) for s in sessions)
         if has_real and not include_demo:
             sessions = [s for s in sessions if not is_demo_session(s["session_id"])]
+
+        # newest activity first (auditors almost always want the latest)
+        sessions = sorted(
+            sessions, key=lambda s: s.get("last_ts") or s.get("first_ts"), reverse=True
+        )
+
+        if start_ts:
+            sessions = [s for s in sessions if (s.get("last_ts") or s.get("first_ts")) >= start_ts]
+        if end_ts:
+            sessions = [s for s in sessions if (s.get("last_ts") or s.get("first_ts")) < end_ts]
+        if agent:
+            needle = agent.lower()
+            sessions = [s for s in sessions if any(needle in t.lower() for t in s.get("agent_tags", []))]
         if q:
             needle = q.lower()
             sessions = [
@@ -254,11 +277,20 @@ def create_audit_app(container: AppContainer) -> FastAPI:
                 or needle in s["user_id"].lower()
                 or any(needle in t.lower() for t in s.get("agent_tags", []))
             ]
+
         total = len(sessions)
-        start = (page - 1) * size
+        filtered = bool(q or start_ts or end_ts or agent)
+        browse_blocked = not filtered and total > BROWSE_THRESHOLD
+        if browse_blocked:
+            sessions = []
+            start = 0
+        else:
+            start = (page - 1) * size
         return {"sessions": sessions[start : start + size],
                 "total": total, "page": page, "page_size": size,
-                "demo_hidden": has_real and not include_demo}
+                "demo_hidden": has_real and not include_demo,
+                "browse_blocked": browse_blocked,
+                "browse_threshold": BROWSE_THRESHOLD}
 
     @app.get("/v1/sessions/{session_id}")
     def get_session(session_id: str, request: Request, from_ts: str | None = None, to_ts: str | None = None):

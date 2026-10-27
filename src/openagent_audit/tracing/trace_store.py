@@ -169,6 +169,59 @@ class LangfuseTraceStore:
         resp.raise_for_status()
         return resp.json().get("data", [])
 
+    def list_sessions(self, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
+        """Aggregate sessions from the Langfuse traces API (paged). Mirrors
+        ``LocalTraceStore.list_sessions`` so the audit-web session list works
+        in production mode too."""
+        from datetime import timezone
+
+        sessions: dict[str, dict] = {}
+        page, page_size = 1, 100
+        while True:
+            params: dict[str, object] = {"page": page, "limit": page_size}
+            if from_ts is not None:
+                params["fromTimestamp"] = from_ts.astimezone(timezone.utc).isoformat()
+            if to_ts is not None:
+                params["toTimestamp"] = to_ts.astimezone(timezone.utc).isoformat()
+            resp = self._client.get("/api/public/traces", params=params)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            for t in data:
+                sid = t.get("sessionId") or ""
+                entry = sessions.setdefault(
+                    sid,
+                    {"session_id": sid, "user_id": t.get("userId") or "", "trace_count": 0,
+                     "first_ts": None, "last_ts": None, "agent_tags": set()},
+                )
+                entry["trace_count"] += 1
+                raw_ts = t.get("timestamp")
+                if raw_ts:
+                    try:
+                        parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+                    except ValueError:
+                        parsed = None
+                    if parsed is not None:
+                        entry["first_ts"] = min(entry["first_ts"] or parsed, parsed)
+                        entry["last_ts"] = max(entry["last_ts"] or parsed, parsed)
+                tags = t.get("tags") or []
+                if isinstance(tags, str):
+                    tags = [tags]
+                entry["agent_tags"].update(tags)
+            if len(data) < page_size or page >= 100:  # hard cap: 10k traces
+                break
+            page += 1
+        return [
+            {
+                "session_id": s["session_id"],
+                "user_id": s["user_id"],
+                "trace_count": s["trace_count"],
+                "first_ts": s["first_ts"],
+                "last_ts": s["last_ts"],
+                "agent_tags": sorted(s["agent_tags"]),
+            }
+            for s in sessions.values()
+        ]
+
     def delete_trace(self, trace_id: str) -> None:
         resp = self._client.delete(f"/api/public/traces/{trace_id}")
         resp.raise_for_status()

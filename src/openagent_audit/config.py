@@ -15,6 +15,30 @@ from typing import Mapping
 
 ROLES = ("auditor", "compliance_lead", "developer")
 
+# Masking Gateway defaults (overridable via AUDIT_GATEWAY_* env vars).
+DEFAULT_CONTENT_PREFIXES = (
+    "gen_ai.", "langfuse.observation", "llm.", "prompt", "completion",
+    "content", "message", "input", "output",
+)
+DEFAULT_SESSION_ATTRS = (
+    "langfuse.session.id", "session.id", "conversation.id",
+    "openagent.conversation_id", "conversation_id",
+)
+DEFAULT_USER_ATTRS = (
+    "langfuse.user.id", "user.id", "enduser.id",
+    "openagent.user_id", "user_id",
+)
+DEFAULT_AGENT_ATTRS = (
+    "agent.id", "openagent.agent_id", "agent_id", "gen_ai.agent",
+)
+
+
+def _csv_or_default(raw: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    if not raw:
+        return default
+    items = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return items or default
+
 
 @dataclass(frozen=True)
 class UserEntry:
@@ -84,7 +108,7 @@ class Settings:
     # Retention / compliance knobs (proposal §10-11; confirm with compliance).
     trace_retention_days: int = 90
     audit_archive_after_days: int = 30
-    reveal_ttl_minutes: int = 5
+    reveal_ttl_minutes: int = 60
 
     # PII detection backend: "rules" (built-in, no external model) or
     # "presidio" (Microsoft Presidio + Chinese spaCy model, proposal §11.3).
@@ -93,6 +117,27 @@ class Settings:
     # Demo seeding: with AUDIT_TRACE_STORE=local, pre-fill sample masked
     # conversations at startup (local manual testing only — never production).
     demo_seed: bool = False
+
+    # --- Masking Gateway (OTLP ingest for non-Python agents, e.g. OpenAgent .NET)
+    # Bearer token required on POST /v1/traces; empty disables auth (dev only).
+    gateway_ingest_token: str = ""
+    # Mask string span attributes whose key starts with any of these prefixes.
+    gateway_content_prefixes: tuple[str, ...] = (
+        "gen_ai.", "langfuse.observation", "llm.", "prompt", "completion",
+        "content", "message", "input", "output",
+    )
+    # Candidate span-attribute keys to map identifiers from (first hit wins).
+    gateway_session_attrs: tuple[str, ...] = (
+        "langfuse.session.id", "session.id", "conversation.id",
+        "openagent.conversation_id", "conversation_id",
+    )
+    gateway_user_attrs: tuple[str, ...] = (
+        "langfuse.user.id", "user.id", "enduser.id",
+        "openagent.user_id", "user_id",
+    )
+    gateway_agent_attrs: tuple[str, ...] = (
+        "agent.id", "openagent.agent_id", "agent_id", "gen_ai.agent",
+    )
 
     # Which agent processes export through this process (used by tooling).
     masking_prefixes: tuple[str, ...] = field(
@@ -136,9 +181,18 @@ class Settings:
             loki_url=e.get("LOKI_URL", ""),
             trace_retention_days=int(e.get("AUDIT_TRACE_RETENTION_DAYS", "90")),
             audit_archive_after_days=int(e.get("AUDIT_ARCHIVE_AFTER_DAYS", "30")),
-            reveal_ttl_minutes=int(e.get("AUDIT_REVEAL_TTL_MINUTES", "5")),
+            reveal_ttl_minutes=int(e.get("AUDIT_REVEAL_TTL_MINUTES", "60")),
             pii_backend=e.get("AUDIT_PII_BACKEND", "rules"),
             demo_seed=e.get("AUDIT_DEMO_SEED", "").lower() in ("1", "true", "yes", "on"),
+            gateway_ingest_token=e.get("AUDIT_GATEWAY_TOKEN", ""),
+            gateway_content_prefixes=_csv_or_default(
+                e.get("AUDIT_GATEWAY_CONTENT_PREFIXES"), DEFAULT_CONTENT_PREFIXES),
+            gateway_session_attrs=_csv_or_default(
+                e.get("AUDIT_GATEWAY_SESSION_ATTRS"), DEFAULT_SESSION_ATTRS),
+            gateway_user_attrs=_csv_or_default(
+                e.get("AUDIT_GATEWAY_USER_ATTRS"), DEFAULT_USER_ATTRS),
+            gateway_agent_attrs=_csv_or_default(
+                e.get("AUDIT_GATEWAY_AGENT_ATTRS"), DEFAULT_AGENT_ATTRS),
         )
 
     def user_for_token(self, token: str) -> UserEntry | None:
