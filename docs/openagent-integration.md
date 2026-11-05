@@ -165,26 +165,63 @@ Langfuse worker 的假设等价），网关内存处理不落盘、令牌认证�
 **Python Agent 仍走原路径**（Langfuse Python SDK + mask_otel_spans 进程内
 脱敏）；两条路径共享同一套 PII 管线与密文表，掩码结果完全一致。
 
-#### 2.0.1 OpenAgent 侧仍需配合的三处改动
+#### 2.0.1 OpenAgent 侧配套改动（已完成于 OpenAgent 仓库）
 
-网关只解决“传输与脱敏”，以下三点必须由 OpenAgent 仓库补齐，否则审计视图不可用：
+以下三项由 OpenAgent 仓库实现，audit 侧不再需要绕过或兜底：
 
-1. **给 span 带会话/用户标识**。网关只从 span 属性读取
-   `openagent.conversation_id` / `openagent.user_id` / `agent.id`。
-   OpenAgent 现在只打了 `openagent.route` 与 `openagent.agent.id`；且
-   conversation id 在端点内才生成（middleware 早于它），应改用子 span 或
-   执行作用域补打。缺这一项时 `langfuse.session.id` 为空 → 会话视图无法聚合，
-   密文行也无法按保留期关联删除。
-2. **只把 traces 发往网关**。OpenAgent 的 OTLP 配置是全局一个地址，
-   traces/logs/metrics 会一起发过来；日志属 Loki 通道，不应进入审计网关，
-   需支持按信号分开配置（或在 Collector 侧分流）。
-3. **内省端点与审计角色**（见 1.2 / 1.3），平台目前尚未实现。
+1. **span 携带会话/用户标识（已实现）**。网关从 span 属性读取
+   `openagent.conversation_id` / `openagent.user_id` / `openagent.agent_id` /
+   `openagent.tenant_id`。OpenAgent 在
+   `AgentExecutor.CreateTurn` → `AuditActivityEnrichment.Publish` 处把这些
+   坐标打到当前 Activity 上（`TurnContext.ToAuditAttributes()` 是唯一投影），
+   并对不经过执行器的请求由 `RequestTelemetryMiddleware` 兜底回填。
+2. **按信号分流（已实现）**。新增 `OpenTelemetry:TracesEndpoint` /
+   `LogsEndpoint` / `MetricsEndpoint`：只有 traces 指向网关，
+   logs/metrics 继续走 `OtlpEndpoint`。日志绝不会进入审计网关。
+3. **exporter 认证头（已实现）**。`OpenTelemetry:TracesHeaders` 及标准
+   `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS` 会被显式
+   绑定；此前端点用代码赋值时 SDK 的默认 headers 读取被绕过，令牌根本发不出去。
+
+> 审计角色映射与 token 内省端点（1.2 / 1.3）暂缓，属已知未接项目：
+> 在此之前 audit 侧使用 `AUDIT_AUTH_PROVIDER=static`。
 
 #### 2.0.2 trace_id 形态
 
 OTLP/JSON 里 trace id 是 base64，Protobuf 里是原始字节。网关在写密文表前统一
 归一为 **32 位小写 hex**——这正是保留期任务按 `trace_id` 匹配删除时使用的形态，
-也与 OpenAgent 日志里的 `X-Trace-Id`/`traceparent` 一致，便于双方对账。
+也与 OpenAgent 日志属性 `Properties.TraceId`（业务 `X-Trace-Id`）一致，便于双方对账。
+
+注意 OpenAgent 的 Serilog 事件里有两个 TraceId：
+`TraceId`（顶层，W3C Activity id）与 `Properties.TraceId`（业务 trace id）。
+审计对账应使用 **`Properties.TraceId`**；`X-Trace-Id` 由前端带入，与网关记录的业务
+trace id 同源。Promtail 已按此分别抽取为 `activity_trace_id` 与 `source_trace_id`。
+
+#### 2.0.3 日志通道（已实测校正）
+
+OpenAgent 的 Serilog 默认输出是**纯文本模板**，`Enrich.WithProperty` 的
+ServiceName/InstanceId 与 `BeginScope` 的 TraceId/ConversationId 都不出现。
+OpenAgent 仓库已把 Engine/Router 的 `appsettings.json` 改为：
+
+```json
+"Serilog": {
+  "ConsoleFormat": "Json",
+  "WriteTo": [ { "Name": "Console",
+                 "Args": { "formatter": "Serilog.Formatting.Json.JsonFormatter, Serilog" } } ]
+}
+```
+
+产出单行 JSON（实测样本）：
+
+```json
+{"Timestamp":"...","Level":"Information",
+ "MessageTemplate":"LLM interaction recorded. ConversationId={ConversationId} ...",
+ "TraceId":"ea83bb32...","SpanId":"09842bda...",
+ "Properties":{"ConversationId":"conv-e2e-1","TraceId":"trace-e2e-1",
+               "AgentId":"cs-bot","ServiceName":"agent-engine","InstanceId":"..."}}
+```
+
+`deploy/promtail/promtail-config.yml` 按该结构从 `Properties.*` 抽取字段，
+并由 `tests/test_deployment_contracts.py` 用上面这份真实样本做回归校验。
 
 ### 2.1 前置条件
 

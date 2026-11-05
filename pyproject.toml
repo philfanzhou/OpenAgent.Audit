@@ -32,7 +32,7 @@ s3 = ["boto3>=1.34"]
 # JSON-only ingest works without it.
 otlp = ["opentelemetry-proto>=1.24"]
 presidio = ["presidio-analyzer>=2.2"]
-dev = ["pytest>=8", "pytest-cov", "opentelemetry-proto>=1.24"]
+dev = ["pytest>=8", "pytest-cov", "opentelemetry-proto>=1.24", "pyyaml>=6"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
