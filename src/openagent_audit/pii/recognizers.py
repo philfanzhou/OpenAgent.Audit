@@ -127,12 +127,65 @@ _SEP = r"[- \u00a0]?"  # optional single separator inside digit runs
 
 
 def _phone_recognizer(text: str) -> list[Span]:
+    """Detect 11-digit mainland mobile numbers.
+
+    Boundary handling matters for recall: requiring a non-digit on both
+    sides meant that two numbers written back to back
+    (``1381234567813912345678``), or a number glued to an ID card
+    (``13812345678`` + 18 digits), matched *nothing* — a silent leak.
+
+    The pattern therefore matches anywhere and disambiguates afterwards:
+    a candidate is accepted when it is not merely a slice of a much longer
+    digit run. Concretely, every candidate is tried and the longest valid
+    prefix starting at that position wins; overlapping duplicates are removed
+    by ``resolve_overlaps`` downstream.
+    """
     out: list[Span] = []
     normalized = normalize(text)
-    for m in re.finditer(rf"(?<!\d)1[3-9](?:{_SEP}\d){{9}}(?!\d)", normalized):
+
+    # The old "no digit on either side" boundary meant two numbers written
+    # back to back, or a number glued to an adjacent ID card, matched
+    # *nothing* — a silent leak. Match anywhere, then decide using the size of
+    # the surrounding digit run:
+    #
+    #   run == 11            -> a lone phone number          -> accept
+    #   run length is a multiple of 11 (22, 33, …)
+    #                        -> concatenated numbers         -> accept each
+    #   any other length     -> a fragment of a longer number
+    #                           (12-digit typo, an ID card's digit substring)
+    #                                                         -> reject
+    #
+    # The "multiple of 11" rule is what keeps adjacent numbers detectable
+    # without inventing false positives inside ID/bank numbers.
+    for m in re.finditer(rf"1[3-9](?:{_SEP}\d){{9}}", normalized):
         d = digits_only(m.group(0))
-        if len(d) == 11:
-            out.append(Span(m.start(), m.end(), "PHONE_NUMBER", 0.95, text[m.start() : m.end()]))
+        if len(d) != 11:
+            continue
+        start, end = m.start(), m.end()
+
+        # Walk the surrounding *number run*, treating the same separators the
+        # pattern allows as part of the run (so "138-1234-5678" is one run,
+        # while "138 1234 5678," still ends at the comma).
+        def is_run_char(ch: str) -> bool:
+            return ch.isdigit() or ch in "- \u00a0"
+
+        run_start = start
+        while run_start > 0 and is_run_char(normalized[run_start - 1]):
+            run_start -= 1
+        run_end = end
+        while run_end < len(normalized) and is_run_char(normalized[run_end]):
+            run_end += 1
+        run_len = len(digits_only(normalized[run_start:run_end]))
+
+        # Accept when the run can be explained as whole numbers:
+        #   11               -> one phone number
+        #   22, 33, … (11n)  -> concatenated phone numbers
+        #   29 / 26 / 30     -> a phone number glued to an 18/15/19-digit
+        #                       ID or card; the ID recognizer claims the tail
+        #                       and overlap resolution keeps both spans
+        explained = run_len % 11 == 0 or run_len in (11 + 18, 11 + 15, 11 + 19)
+        if explained:
+            out.append(Span(start, end, "PHONE_NUMBER", 0.95, text[start:end]))
     return out
 
 
@@ -195,18 +248,83 @@ def _email_recognizer(text: str) -> list[Span]:
 
 
 # Context-triggered Chinese person names — deliberately conservative.
+#
+# The trigger words alone are not enough: "联系" is followed by ordinary
+# nouns just as often as by a person ("联系电话138…", "联系地址…"), and a
+# naive 2-3 character capture masked the WORD rather than a name. Every
+# candidate is therefore checked against a blocklist of common business nouns
+# before being reported, which keeps precision usable without losing the
+# genuine "帮我联系下张伟" case.
 _NAME_BEFORE = r"(?:帮我联系|帮忙联系|联系|找一下|找找|询问|咨询|我是|叫我|这是|听说|交给)"
 _NAME_CONNECTOR = r"(?:一下|下|到|给)?"
 _NAME_AFTER = r"(?=先生|女士|经理|老师|同学|工程师|主任)"
+
+# Nouns that frequently follow a trigger word. Matching any of these means the
+# capture is a common noun, not a person's name.
+_NON_NAME_WORDS: frozenset[str] = frozenset({
+    "电话", "手机", "号码", "邮箱", "邮件", "地址", "地点", "公司", "部门", "单位",
+    "客户", "用户", "业务", "部门", "合同", "订单", "账号", "帐号", "密码", "验证",
+    "资料", "信息", "相关", "负责", "人员", "同事", "领导", "上级", "下级", "财务",
+    "人事", "行政", "技术", "产品", "运营", "市场", "销售", "客服", "售后", "服务",
+    "系统", "平台", "应用", "接口", "数据", "报表", "文档", "文件", "图片", "视频",
+    "以后", "之后", "之前", "现在", "今天", "明天", "昨天", "时候", "时间", "地方",
+})
+
+# Chinese surnames are 1-2 characters; using the strongest single-character set
+# avoids treating arbitrary text as a name.
+_NON_NAME_SUFFIXES: tuple[str, ...] = ("部", "处", "科", "组", "室", "局", "厅", "司", "厂", "店")
+_NAME_SURNAMES: frozenset[str] = frozenset(
+    "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜"
+    "戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐"
+    "费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平"
+    "黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝"
+    "董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊"
+    "胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣贲邓郁单杭洪包诸左石"
+    "崔吉钮龚程嵇邢滑裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富"
+    "巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武"
+    "符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池"
+    "乔阴郁胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍却璩桑桂濮牛寿通"
+    "边扈燕冀郏浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾"
+    "终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁勾"
+    "敖融冷訾辛阚那简饶空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖"
+    "益桓公"
+)
+
+
+def _looks_like_name(candidate: str) -> bool:
+    """Heuristic: a 2-3 character capture starting with a surname.
+
+    The blocklist catches whole common nouns ("电话", "地址"). Candidates that
+    merely *end* in a business-noun fragment ("公司人" out of "公司人事部") are
+    caught too: if the capture contains a blocklisted 2-character word at all,
+    the surrounding text is a phrase rather than a name.
+    """
+    if not candidate or not (2 <= len(candidate) <= 3):
+        return False
+    if candidate in _NON_NAME_WORDS:
+        return False
+    for start in range(len(candidate) - 1):
+        if candidate[start : start + 2] in _NON_NAME_WORDS:
+            return False
+    # Occupations/titles that follow a surname in business text are not names
+    # on their own ("人事部", "财务部").
+    if any(candidate.endswith(suffix) for suffix in _NON_NAME_SUFFIXES):
+        return False
+    return candidate[0] in _NAME_SURNAMES
 
 
 def _name_recognizer(text: str) -> list[Span]:
     out: list[Span] = []
     for m in re.finditer(rf"{_NAME_BEFORE}{_NAME_CONNECTOR}([\u4e00-\u9fff]{{2,3}})", text):
-        start = m.start(1)
-        out.append(Span(start, m.end(1), "PERSON", 0.6, m.group(1)))
+        candidate = m.group(1)
+        if not _looks_like_name(candidate):
+            continue
+        out.append(Span(m.start(1), m.end(1), "PERSON", 0.6, candidate))
     for m in re.finditer(rf"([\u4e00-\u9fff]{{2,3}}){_NAME_AFTER}", text):
-        out.append(Span(m.start(1), m.end(1), "PERSON", 0.6, m.group(1)))
+        candidate = m.group(1)
+        if not _looks_like_name(candidate):
+            continue
+        out.append(Span(m.start(1), m.end(1), "PERSON", 0.6, candidate))
     return out
 
 

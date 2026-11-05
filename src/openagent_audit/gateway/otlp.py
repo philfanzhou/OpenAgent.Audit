@@ -108,8 +108,73 @@ def _try_mask(
     return None
 
 
-def _is_content_key(key: str, prefixes: tuple[str, ...]) -> bool:
-    return key.startswith(prefixes)
+def _is_content_key(key, prefixes: tuple[str, ...]) -> bool:
+    """True when *key* names a content-bearing attribute.
+
+    *key* comes from the network and may be any JSON type; only string keys
+    can match a prefix.
+    """
+    return isinstance(key, str) and key.startswith(prefixes)
+
+
+def _mask_any_value(value, *, key: str, protect, prefixes: tuple[str, ...], depth: int = 0):
+    """Mask an OTLP AnyValue, recursing into arrays and key/value lists.
+
+    A content-bearing attribute does not have to be a plain string: OTLP
+    encodes multi-part prompts as ``arrayValue`` / ``kvlistValue``, and those
+    nested strings were previously forwarded in the clear (a real PII leak).
+    Returns the rewritten value (or the original when nothing matched).
+    """
+    if depth > 10 or not isinstance(value, dict):
+        return value
+
+    if "stringValue" in value:
+        text = value["stringValue"]
+        if isinstance(text, str) and text:
+            if key not in _ID_ATTRIBUTE_KEYS and _is_content_key(key, prefixes):
+                result = protect(text)
+                if result.entities:
+                    return {"stringValue": result.masked_text}
+        return value
+
+    if "arrayValue" in value:
+        array = value["arrayValue"]
+        if isinstance(array, dict):
+            items = array.get("values")
+            if isinstance(items, list):
+                array["values"] = [
+                    _mask_any_value(item, key=key, protect=protect, prefixes=prefixes, depth=depth + 1)
+                    for item in items
+                ]
+        return value
+
+    if "kvlistValue" in value:
+        kv = value["kvlistValue"]
+        if isinstance(kv, dict):
+            entries = kv.get("values")
+            if isinstance(entries, list):
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    # A nested key refines the match ("prompt.chat" inside a
+                    # content attribute); when it does not look like an
+                    # attribute name at all ("note", "role") the entry
+                    # inherits the parent's content semantics, because the
+                    # parent already matched a content prefix.
+                    entry_key = entry.get("key")
+                    nested_key = (
+                        entry_key
+                        if isinstance(entry_key, str) and "." in entry_key
+                        else key
+                    )
+                    if "value" in entry:
+                        entry["value"] = _mask_any_value(
+                            entry["value"], key=nested_key, protect=protect,
+                            prefixes=prefixes, depth=depth + 1
+                        )
+        return value
+
+    return value
 
 
 def _attr_value(raw: JsonDict) -> AttrValue | None:
@@ -140,7 +205,10 @@ def _set_attr(span: JsonDict, key: str, value: str) -> None:
 
 
 def _first_attr(span: JsonDict, candidates: Iterable[str]) -> str | None:
-    attrs = {a.get("key"): _attr_value(a) for a in span.get("attributes", [])}
+    attrs = {
+        a.get("key"): _attr_value(a)
+        for a in (_as_dicts(span.get("attributes")))
+    }
     for key in candidates:
         value = attrs.get(key)
         if isinstance(value, str) and value:
@@ -178,17 +246,14 @@ def mask_span(
     user_id = _first_attr(span, user_attrs)
     agent_id = _first_attr(span, agent_attrs)
 
-    # 1. attributes (the original path, kept for backward compat)
-    for attr in span.get("attributes", []):
+    # 1. attributes — string, array and key/value list values alike
+    for attr in _as_dicts(span.get("attributes")):
         key = attr.get("key", "")
-        if not key.startswith(tuple(content_prefixes)):
+        if not _is_content_key(key, tuple(content_prefixes)) or key in _ID_ATTRIBUTE_KEYS:
             continue
-        value = _attr_value(attr)
-        if not isinstance(value, str) or not value:
-            continue
-        result = protect(value)
-        if result.entities:
-            attr["value"] = {"stringValue": result.masked_text}
+        attr["value"] = _mask_any_value(
+            attr.get("value"), key=key, protect=protect, prefixes=tuple(content_prefixes)
+        )
 
     # 2. span name (the metric name that usually mirrors the route)
     name = span.get("name")
@@ -213,23 +278,19 @@ def mask_span(
             if isinstance(event, dict):
                 event_name = event.get("name")
                 if isinstance(event_name, str) and event_name:
-                    ev_result = pipeline.protect(
-                        event_name, trace_id=trace_id, session_id=session_id
-                    )
+                    ev_result = protect(event_name)
                     if ev_result.entities:
                         event["name"] = ev_result.masked_text
-                for ev_attr in event.get("attributes", []):
+                for ev_attr in _as_dicts(event.get("attributes")):
                     ev_key = ev_attr.get("key", "")
-                    if not ev_key.startswith(tuple(content_prefixes)):
+                    if not _is_content_key(ev_key, tuple(content_prefixes)) or ev_key in _ID_ATTRIBUTE_KEYS:
                         continue
-                    ev_value = _attr_value(ev_attr)
-                    if not isinstance(ev_value, str) or not ev_value:
-                        continue
-                    result = pipeline.protect(
-                        ev_value, trace_id=trace_id, session_id=session_id
+                    ev_attr["value"] = _mask_any_value(
+                        ev_attr.get("value"),
+                        key=ev_key,
+                        protect=protect,
+                        prefixes=tuple(content_prefixes),
                     )
-                    if result.entities:
-                        ev_attr["value"] = {"stringValue": result.masked_text}
 
     # 5. resource-level attributes (outer envelope)
     # Handled by mask_resource() below when iterating resourceSpans.
@@ -257,16 +318,13 @@ def mask_resource_attrs(
         def protect(text: str):  # noqa: ANN001 - closure over identifiers
             return pipeline.protect(text, trace_id=trace_id, session_id=session_id)
 
-    for attr in resource.get("attributes", []):
+    for attr in _as_dicts(resource.get("attributes")):
         key = attr.get("key", "")
-        if not key.startswith(tuple(content_prefixes)):
+        if not _is_content_key(key, tuple(content_prefixes)):
             continue
-        value = _attr_value(attr)
-        if not isinstance(value, str) or not value:
-            continue
-        result = protect(value)
-        if result.entities:
-            attr["value"] = {"stringValue": result.masked_text}
+        attr["value"] = _mask_any_value(
+            attr.get("value"), key=key, protect=protect, prefixes=tuple(content_prefixes)
+        )
 
 
 def mask_scope(
@@ -291,11 +349,30 @@ def mask_scope(
                 scope[field] = result.masked_text
 
 
+def _as_dicts(value) -> list[JsonDict]:
+    """Return only the dict elements of *value*.
+
+    OTLP payloads arrive from the network, so every level may be null, a
+    string, a number or a list of mixed types. Coercing here means a malformed
+    export produces an empty span list instead of an ``AttributeError`` that
+    would surface as an unhandled 500.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 def iter_spans(payload: JsonDict) -> Iterable[JsonDict]:
-    """Yield every span in an OTLP/JSON export payload."""
-    for resource_spans in payload.get("resourceSpans", []):
-        for scope_spans in resource_spans.get("scopeSpans", []):
-            yield from scope_spans.get("spans", [])
+    """Yield every span in an OTLP/JSON export payload, ignoring malformed nodes."""
+    if not isinstance(payload, dict):
+        return
+    for resource_spans in _as_dicts(payload.get("resourceSpans")):
+        for scope_spans in _as_dicts(resource_spans.get("scopeSpans")):
+            spans = scope_spans.get("spans")
+            if isinstance(spans, list):
+                for span in spans:
+                    if isinstance(span, dict):
+                        yield span
 
 
 def process_otlp_payload(
@@ -323,7 +400,9 @@ def process_otlp_payload(
     session_id = _first_attr(first_span, session_attrs) if first_span else None
 
     with pipeline.batch(trace_id=trace_id, session_id=session_id) as batch:
-        for resource_spans in payload.get("resourceSpans", []):
+        if not isinstance(payload, dict):
+            return payload
+        for resource_spans in _as_dicts(payload.get("resourceSpans")):
             resource = resource_spans.get("resource")
             if isinstance(resource, dict):
                 mask_resource_attrs(
@@ -332,7 +411,7 @@ def process_otlp_payload(
                     content_prefixes=content_prefixes,
                     protect=batch.protect,
                 )
-            for scope_spans in resource_spans.get("scopeSpans", []):
+            for scope_spans in _as_dicts(resource_spans.get("scopeSpans")):
                 scope = scope_spans.get("scope")
                 if isinstance(scope, dict):
                     mask_scope(
@@ -341,7 +420,7 @@ def process_otlp_payload(
                         content_prefixes=content_prefixes,
                         protect=batch.protect,
                     )
-                for span in scope_spans.get("spans", []):
+                for span in _as_dicts(scope_spans.get("spans")):
                     mask_span(
                         span,
                         pipeline=pipeline,

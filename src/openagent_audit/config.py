@@ -52,6 +52,10 @@ class UserEntry:
         if self.role not in ROLES:
             raise ValueError(f"unknown role {self.role!r}; expected one of {ROLES}")
 
+    def __repr__(self) -> str:
+        # The token authenticates the user; never render it.
+        return f"UserEntry(username={self.username!r}, role={self.role!r}, token='***')"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -219,6 +223,40 @@ class Settings:
             if u.token == token:
                 return u
         return None
+
+    def __repr__(self) -> str:
+        """Redacted representation.
+
+        ``Settings`` holds the audit DB credentials, the private-key
+        passphrase and the gateway bearer token. The dataclass default repr
+        would print all of them, and a single ``logger.debug(settings)`` or
+        an exception traceback rendering the object would leak every secret
+        into logs and crash dumps.
+        """
+        def secret(value: str) -> str:
+            return "***" if value else ""
+
+        return (
+            f"Settings(env={self.env!r}, audit_db_url={self._redact_url(self.audit_db_url)!r}, "
+            f"service_token={secret(self.service_token)!r}, "
+            f"users={len(self.users)} entries, auth_provider={self.auth_provider!r}, "
+            f"key_provider={self.key_provider!r}, "
+            f"private_key_passphrase={secret(self.local_private_key_passphrase)!r}, "
+            f"gateway_ingest_token={secret(self.gateway_ingest_token)!r}, "
+            f"trace_store={self.trace_store!r}, pii_backend={self.pii_backend!r})"
+        )
+
+    @staticmethod
+    def _redact_url(url: str) -> str:
+        """Hide the password inside ``scheme://user:password@host/db``."""
+        if "://" not in url:
+            return url
+        scheme, _, rest = url.partition("://")
+        if "@" not in rest:
+            return url
+        credentials, _, host = rest.rpartition("@")
+        user, sep, _password = credentials.partition(":")
+        return f"{scheme}://{user}{sep}***@{host}" if sep else url
 
     def __post_init__(self) -> None:
         """Reject compliance knobs outside their safe operating range.
