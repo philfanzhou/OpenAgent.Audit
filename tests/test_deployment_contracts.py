@@ -190,3 +190,36 @@ def test_compose_does_not_expose_audit_internals_to_the_platform():
     for name in ("audit-db", "langfuse-web", "langfuse-worker", "decrypt-svc"):
         networks = compose["services"][name].get("networks")
         assert networks in (None, ["default"], ["openagent-audit"]), (name, networks)
+
+
+def test_env_example_has_no_inline_comments_after_values():
+    """docker compose reads .env verbatim: `KEY=value  # note` makes the note
+    part of the value. A copied template then started Langfuse with a secret
+    of "            # REQUIRED: openssl rand -base64 32" (reproduced with
+    `docker run --env-file`), which fails with a confusing error."""
+    offenders = []
+    for number, line in enumerate(
+        (ROOT / ".env.example").read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        value = stripped.split("=", 1)[1]
+        if "#" in value:
+            offenders.append(f"line {number}: {stripped}")
+
+    assert not offenders, "inline comments become part of the value: " + "; ".join(offenders)
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["NEXTAUTH_SECRET", "SALT", "ENCRYPTION_KEY", "AUDIT_SERVICE_TOKEN", "AUDIT_GATEWAY_TOKEN"],
+)
+def test_env_example_leaves_required_secrets_blank(variable):
+    """Required secrets must ship empty so a forgotten fill-in fails loudly
+    (compose `:?` / gateway REQUIRE_AUTH) instead of using a placeholder."""
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    match = re.search(rf"(?m)^{re.escape(variable)}=(.*)$", text)
+
+    assert match is not None, f"{variable} missing from .env.example"
+    assert match.group(1).strip() == "", f"{variable} must be blank, got {match.group(1)!r}"
