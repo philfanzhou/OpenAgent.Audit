@@ -218,6 +218,31 @@ def _authorize(settings: Settings, request: Request) -> bool:
     return any(hmac.compare_digest(token, expected) for token in candidates)
 
 
+async def _read_body_limited(request: Request, limit: int) -> bytes | None:
+    """Read the request body, refusing anything over *limit*.
+
+    Returns ``None`` when the body exceeds the cap. The stream is consumed
+    incrementally so an attacker cannot force an unbounded allocation before
+    the size is known.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                return None
+        except ValueError:
+            return None
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _count_spans(deps: GatewayDeps) -> Callable[[int], None]:
     def _record(n: int) -> None:
         deps.counters.record_spans_masked(n)
@@ -262,9 +287,24 @@ def create_gateway_app(deps: GatewayDeps | None = None) -> FastAPI:
                 {"detail": f"请求体无法解析为 OTLP: {exc}"}, status_code=400
             )
 
-        if not any(iter_spans(payload)):
+        spans = list(iter_spans(payload))
+        if not spans:
             # Valid but empty export: nothing to mask or forward.
             return {"ok": True, "spans": 0, "transport": path_style}
+
+        # Bound the work one request can force (each span runs the full PII
+        # pipeline: regex/NER plus an AES-GCM seal per entity).
+        if len(spans) > settings.gateway_max_spans:
+            counters.record_batch_rejected()
+            return JSONResponse(
+                {
+                    "detail": (
+                        f"单个请求包含 {len(spans)} 个 span，超过上限 "
+                        f"{settings.gateway_max_spans}；请在 Agent 侧减小导出批大小"
+                    )
+                },
+                status_code=413,
+            )
 
         try:
             process_otlp_payload(
@@ -308,7 +348,24 @@ def create_gateway_app(deps: GatewayDeps | None = None) -> FastAPI:
     # ``.../v1/traces/v1/traces``), and because a ``grpc``-configured endpoint
     # posts OTLP/gRPC framing to the base URL.
     async def ingest_traces(request: Request):
-        return _ingest(request, await request.body(), "http")
+        # Read with a hard cap. `await request.body()` would buffer an
+        # arbitrarily large payload in memory before any validation, so a
+        # single oversized POST could exhaust the gateway (the process that
+        # holds the masking + key duties for every other agent).
+        body = await _read_body_limited(request, settings.gateway_max_body_bytes)
+        if body is None:
+            counters.record_batch_rejected()
+            return JSONResponse(
+                {
+                    "detail": (
+                        "请求体超过网关上限 "
+                        f"({settings.gateway_max_body_bytes} bytes)；"
+                        "请在 Agent 侧减小导出批大小"
+                    )
+                },
+                status_code=413,
+            )
+        return _ingest(request, body, "http")
 
     for route in (
         "/v1/traces",
