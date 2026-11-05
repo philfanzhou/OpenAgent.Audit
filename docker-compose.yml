@@ -225,14 +225,18 @@ services:
     command: -config.file=/etc/promtail/config.yml
 
 networks:
+  # This stack owns both networks, so `docker compose up` here can run FIRST
+  # and the OpenAgent stack joins them afterwards. Never declare either one
+  # external on this side: the OpenAgent compose file references them as
+  # external, so two external declarations deadlock (each stack waits for the
+  # other to create the network and `up` aborts with
+  # "network ... declared as external, but could not be found").
   default:
     name: ${AUDIT_COMPOSE_NETWORK:-openagent-audit}
   openagent:
-    # The OpenAgent application network, created by
-    # deploy/openagent/docker-compose.yml. Declared external so only the
-    # masking gateway joins it — audit-db, Langfuse and decrypt-svc stay on
-    # the audit network and are never reachable from the platform.
-    external: true
+    # The OpenAgent application network. Only the masking gateway joins it —
+    # audit-db, Langfuse and decrypt-svc stay on the audit network and are
+    # never reachable from the platform.
     name: ${OPENAGENT_APP_NETWORK:-openagent}
 
 volumes:
