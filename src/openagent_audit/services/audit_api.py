@@ -296,7 +296,9 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     def get_session(session_id: str, request: Request, from_ts: str | None = None, to_ts: str | None = None):
         principal = principal_of(request, VIEW_MASKED)
         start, end = time_range(from_ts, to_ts)
-        traces = container.trace_store.list_traces(session_id=session_id, from_ts=start, to_ts=end)
+        traces = container.trace_store.list_traces(
+            session_id=session_id, from_ts=start, to_ts=end, with_observations=True
+        )
         if not traces:
             raise HTTPException(status_code=404, detail="session not found")
         log_view(principal, "SESSION_VIEWED", "session", session_id)
@@ -512,7 +514,9 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     ):
         principal = ui_principal(request, VIEW_MASKED)
         start, end = time_range(from_ts, to_ts)
-        traces = container.trace_store.list_traces(session_id=session_id, from_ts=start, to_ts=end)
+        traces = container.trace_store.list_traces(
+            session_id=session_id, from_ts=start, to_ts=end, with_observations=True
+        )
         if not traces:
             raise HTTPException(status_code=404, detail="session not found")
         log_view(principal, "SESSION_VIEWED", "session", session_id)

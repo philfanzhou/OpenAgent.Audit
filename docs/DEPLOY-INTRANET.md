@@ -106,7 +106,11 @@ openssl rand -base64 32    # -> SALT
 openssl rand -hex 32       # -> ENCRYPTION_KEY
 openssl rand -hex 32       # -> AUDIT_SERVICE_TOKEN
 openssl rand -hex 32       # -> AUDIT_GATEWAY_TOKEN   ← 记下来，第 3 步要用
-openssl rand -hex 32       # -> AUDIT_DB_PASSWORD
+openssl rand -hex 32       # -> AUDIT_OWNER_PASSWORD
+openssl rand -hex 32       # -> AUDIT_AGENT_WRITER_PASSWORD
+openssl rand -hex 32       # -> AUDIT_API_PASSWORD
+openssl rand -hex 32       # -> AUDIT_DECRYPT_PASSWORD
+openssl rand -hex 32       # -> AUDIT_RETENTION_PASSWORD
 ```
 
 `.env` 里必须填的非空项：
@@ -115,7 +119,9 @@ openssl rand -hex 32       # -> AUDIT_DB_PASSWORD
 |---|---|
 | `NEXTAUTH_SECRET` / `SALT` / `ENCRYPTION_KEY` | Langfuse 三项，缺一不启动 |
 | `LANGFUSE_DB_PASSWORD` / `CLICKHOUSE_PASSWORD` / `REDIS_PASSWORD` / `MINIO_ROOT_PASSWORD` | 基础组件密码 |
-| `AUDIT_DB_PASSWORD` / `AUDIT_SERVICE_TOKEN` | 审计域 |
+| `AUDIT_OWNER_PASSWORD` | 建库账号，仅初始化用，不下发给服务 |
+| `AUDIT_AGENT_WRITER_PASSWORD` / `AUDIT_API_PASSWORD` / `AUDIT_DECRYPT_PASSWORD` / `AUDIT_RETENTION_PASSWORD` | 各服务独立密码，**必须互不相同** |
+| `AUDIT_SERVICE_TOKEN` | 审计域 |
 | `AUDIT_GATEWAY_TOKEN` | 平台→网关令牌，**必须与 OpenAgent 侧一致** |
 | `AUDIT_PRIVATE_KEY_PASSPHRASE` | 第 2.1 步的口令 |
 | `AUDIT_USERS` | 静态账号，至少留一个 `developer` 用于看指标 |

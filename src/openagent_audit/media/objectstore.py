@@ -14,7 +14,7 @@ from typing import Protocol
 
 
 class ObjectStore(Protocol):
-    def put(self, key: str, data: bytes) -> None: ...
+    def put(self, key: str, data: bytes, *, retention_days: int | None = None) -> None: ...
     def get(self, key: str) -> bytes: ...
     def delete(self, key: str) -> None: ...
 
@@ -39,7 +39,9 @@ class LocalObjectStore:
         validate_key(key)
         return self._root / key
 
-    def put(self, key: str, data: bytes) -> None:
+    def put(self, key: str, data: bytes, *, retention_days: int | None = None) -> None:
+        # Retention is enforced by the backing store for S3 (Object Lock); the
+        # filesystem backend cannot express it and ignores the argument.
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
@@ -83,9 +85,23 @@ class S3ObjectStore:
             )
         self._bucket = bucket
 
-    def put(self, key: str, data: bytes) -> None:
+    def put(self, key: str, data: bytes, *, retention_days: int | None = None) -> None:
+        """Upload *data*. When *retention_days* is given, request an
+        Object-Lock retention on the object.
+
+        Bucket-level Object Lock only makes objects *eligible*; each object
+        still needs an explicit retention (or a bucket default). Without this
+        the archive was deletable inside its compliance window.
+        """
         validate_key(key)
-        self._client.put_object(Bucket=self._bucket, Key=key, Body=data)
+        extra: dict = {}
+        if retention_days is not None:
+            from datetime import datetime, timedelta, timezone
+
+            until = datetime.now(timezone.utc) + timedelta(days=retention_days)
+            extra["ObjectLockMode"] = "COMPLIANCE"
+            extra["ObjectLockRetainUntilDate"] = until
+        self._client.put_object(Bucket=self._bucket, Key=key, Body=data, **extra)
 
     def get(self, key: str) -> bytes:
         validate_key(key)

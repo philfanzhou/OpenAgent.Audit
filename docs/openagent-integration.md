@@ -230,7 +230,7 @@ OpenAgent 仓库已把 Engine/Router 的 `appsettings.json` 改为：
 | audit 平台已部署 | `docker compose --env-file .env up -d`（Langfuse 栈 + audit-db + audit-api + decrypt-svc） |
 | 公钥已签发 | `python scripts/provision_keys.py`，`AUDIT_PUBLIC_KEY_PATH` 指向公钥；**私钥文件绝不下发到 OpenAgent 侧** |
 | Langfuse 项目凭据 | `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` |
-| 密文库账号 | audit-db 的 `agent_writer` 角色（对密文表仅 INSERT，由 `deploy/audit_db_init.sql` 保证） |
+| 密文库账号 | audit-db 的 `agent_writer` 角色（对密文表仅 INSERT，由 `deploy/10_audit_schema.sql` 保证） |
 
 ### 2.2 Agent 进程接入（一行装配）
 

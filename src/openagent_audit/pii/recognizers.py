@@ -47,6 +47,22 @@ def digits_only(value: str) -> str:
     return "".join(ch for ch in value if ch.isdigit())
 
 
+def _id_card_digits(value: str) -> str:
+    """Return only the digits and the final ``X``/``x`` of an ID-card string.
+
+    ``digits_only`` strips the checksum character, breaking the 18-digit
+    validators; this variant preserves the last character when it is a
+    valid GB 11643 checksum suffix.
+    """
+    body = digits_only(value)
+    if not value:
+        return body
+    final = value[-1]
+    if final in ("X", "x"):
+        return body + final.upper()
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Spans and recognizer protocol
 # ---------------------------------------------------------------------------
@@ -77,10 +93,11 @@ _ID_CHECK = "10X98765432"
 
 
 def is_valid_id_card(digits17_and_check: str) -> bool:
-    """18-digit GB 11643 checksum."""
+    """18-digit GB 11643 checksum. The last character may be ``X`` (case-insensitive)."""
     if len(digits17_and_check) != 18:
         return False
-    body, check = digits17_and_check[:17], digits17_and_check[17].upper()
+    body = digits17_and_check[:17]
+    check = digits17_and_check[17].upper()
     if not body.isdigit():
         return False
     total = sum(int(ch) * w for ch, w in zip(body, _ID_WEIGHTS))
@@ -122,12 +139,38 @@ def _phone_recognizer(text: str) -> list[Span]:
 def _id_card_recognizer(text: str) -> list[Span]:
     out: list[Span] = []
     normalized = normalize(text)
-    # 18-digit with separators allowed anywhere inside the run; strict
-    # boundaries on both sides so a longer digit run is never half-matched.
-    for m in re.finditer(r"(?<![\dXx])\d(?:[\d\- Xx\u00a0]{16,45})[\dXx](?![\dXx])", normalized):
-        d = digits_only(m.group(0))
-        if re.fullmatch(r"\d{17}[0-9Xx]", d) and is_valid_id_card(d):
-            out.append(Span(m.start(), m.end(), "ID_CARD", 0.95, text[m.start() : m.end()]))
+    # Match any candidate 18-char string that looks like an ID: 17 digits +
+    # a final character that is either a digit or X/x. Separators are handled
+    # inside the run (one separator allowed every 1-4 digits). The non-digit
+    # run separator constraint avoids merging two separate ID numbers separated
+    # by a single space (18 + space + 18 -> one 37-char candidate).
+    #
+    # Strategy: match *any* digit run that becomes 18 chars after sanitising,
+    # then let is_valid_id_card reject the wrong ones. A greedy match over
+    # arbitrary separators would merge neighbouring candidates, so we first
+    # match a tight run (digits + at most one separator every few digits) and
+    # fall back to the looser pattern only when the tight one produces nothing.
+    _tight = re.compile(
+        r"(?<![0-9Xx])"
+        r"(?:\d{1,4}[\- \u00a0]?){4,6}\d[\dXx]"
+        r"(?![0-9Xx])"
+    )
+    _loose = re.compile(
+        r"(?<![0-9Xx])"           # left boundary: not a digit/X/x
+        r"[\dXx](?:[\d\- \u00a0Xx]{16,44})"  # body with separators
+        r"(?![0-9Xx])"            # right boundary
+    )
+    seen: set[tuple[int, int]] = set()
+    for pattern in (_tight, _loose):
+        for m in pattern.finditer(normalized):
+            raw = m.group(0)
+            key = (m.start(), m.end())
+            if key in seen:
+                continue
+            d = _id_card_digits(raw)
+            if len(d) == 18 and is_valid_id_card(d):
+                seen.add(key)
+                out.append(Span(m.start(), m.end(), "ID_CARD", 0.95, text[m.start() : m.end()]))
     # Legacy 15-digit IDs (no checksum digit).
     for m in re.finditer(r"(?<!\d)\d{15}(?!\d)", normalized):
         out.append(Span(m.start(), m.end(), "ID_CARD", 0.7, text[m.start() : m.end()]))

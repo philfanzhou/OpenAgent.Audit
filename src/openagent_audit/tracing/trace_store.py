@@ -85,21 +85,12 @@ def normalize_langfuse_trace(row: dict) -> TraceRecord:
 
     observations: list[ObservationRecord] = []
     for obs in row.get("observations") or []:
-        if not isinstance(obs, dict):
-            continue
-        observations.append(
-            ObservationRecord(
-                id=str(obs.get("id") or ""),
-                type=str(obs.get("type") or "span"),
-                name=str(obs.get("name") or ""),
-                input=_stringify_io(obs.get("input")),
-                output=_stringify_io(obs.get("output")),
-                metadata=obs.get("metadata") if isinstance(obs.get("metadata"), dict) else {},
-                model=obs.get("model"),
-                usage=obs.get("usage") if isinstance(obs.get("usage"), dict) else {},
-                latency_ms=obs.get("latency") if isinstance(obs.get("latency"), (int, float)) else None,
-            )
-        )
+        if isinstance(obs, dict):
+            observations.append(_observation_from_dict(obs))
+        # A bare string is an observation *id*: the trace-list endpoint does not
+        # embed observation bodies, only ids. Callers that need content must
+        # fetch detail per trace (see LangfuseTraceStore.get_trace_detail);
+        # skipping bare ids silently produced empty session pages.
 
     return TraceRecord(
         trace_id=str(row.get("traceId") or row.get("id") or ""),
@@ -112,6 +103,20 @@ def normalize_langfuse_trace(row: dict) -> TraceRecord:
     )
 
 
+def _observation_from_dict(obs: dict) -> ObservationRecord:
+    return ObservationRecord(
+        id=str(obs.get("id") or ""),
+        type=str(obs.get("type") or "span"),
+        name=str(obs.get("name") or ""),
+        input=_stringify_io(obs.get("input")),
+        output=_stringify_io(obs.get("output")),
+        metadata=obs.get("metadata") if isinstance(obs.get("metadata"), dict) else {},
+        model=obs.get("model"),
+        usage=obs.get("usage") if isinstance(obs.get("usage"), dict) else {},
+        latency_ms=obs.get("latency") if isinstance(obs.get("latency"), (int, float)) else None,
+    )
+
+
 class TraceStore(Protocol):
     def upsert_trace(self, trace: TraceRecord) -> None: ...
     def get_trace(self, trace_id: str) -> TraceRecord | None: ...
@@ -121,6 +126,9 @@ class TraceStore(Protocol):
         user_id: str | None = None,
         from_ts: datetime | None = None,
         to_ts: datetime | None = None,
+        *,
+        with_observations: bool = False,
+        max_detail_fetches: int = 50,
     ) -> list[TraceRecord]: ...
     def delete_trace(self, trace_id: str) -> None: ...
     def delete_older_than(self, cutoff: datetime) -> list[str]: ...
@@ -148,7 +156,14 @@ class LocalTraceStore:
         user_id: str | None = None,
         from_ts: datetime | None = None,
         to_ts: datetime | None = None,
+        *,
+        with_observations: bool = False,
+        max_detail_fetches: int = 50,
     ) -> list[TraceRecord]:
+        # The local store holds complete records, so `with_observations` and
+        # `max_detail_fetches` are accepted for parity with the Langfuse store
+        # (no detail round trips exist here) and ignored.
+        del with_observations, max_detail_fetches
         with self._lock:
             traces = list(self._traces.values())
         if session_id is not None:
@@ -229,24 +244,51 @@ class LangfuseTraceStore:
         user_id: str | None = None,
         from_ts: datetime | None = None,
         to_ts: datetime | None = None,
+        *,
+        page_size: int = 100,
+        max_pages: int | None = None,
     ) -> list[dict]:
         """Langfuse API is the source of truth; retrieval stays limited to
         userId / sessionId / time range (proposal §08 检索范围 — no reverse
-        lookup by phone number or ID card)."""
+        lookup by phone number or ID card).
+
+        Pages until the API returns a short page. Previously only the first
+        page was fetched, so any deployment with more than ``limit`` traces in
+        range silently served a truncated view (and retention deleted only the
+        first page). ``max_pages`` bounds the work for callers that only need
+        a sample; ``None`` means "page to the end".
+        """
         from datetime import timezone
 
-        params: dict[str, str] = {}
-        if session_id:
-            params["sessionId"] = session_id
-        if user_id:
-            params["userId"] = user_id
-        if from_ts is not None:
-            params["fromTimestamp"] = from_ts.astimezone(timezone.utc).isoformat()
-        if to_ts is not None:
-            params["toTimestamp"] = to_ts.astimezone(timezone.utc).isoformat()
-        resp = self._client.get("/api/public/traces", params=params)
-        resp.raise_for_status()
-        return resp.json().get("data", [])
+        rows: list[dict] = []
+        page = 1
+        while True:
+            params: dict[str, object] = {"page": page, "limit": page_size}
+            if session_id:
+                params["sessionId"] = session_id
+            if user_id:
+                params["userId"] = user_id
+            if from_ts is not None:
+                params["fromTimestamp"] = from_ts.astimezone(timezone.utc).isoformat()
+            if to_ts is not None:
+                params["toTimestamp"] = to_ts.astimezone(timezone.utc).isoformat()
+
+            resp = self._client.get("/api/public/traces", params=params)
+            resp.raise_for_status()
+            data = resp.json().get("data", []) or []
+            rows.extend(data)
+
+            # Terminate on an empty page, not on "shorter than what we asked
+            # for": a Langfuse build with a server-side page cap returns fewer
+            # rows than requested while more pages remain, which would
+            # silently truncate the result (and the retention sweep).
+            if not data:
+                break
+            if max_pages is not None and page >= max_pages:
+                break
+            page += 1
+
+        return rows
 
     def list_traces(
         self,
@@ -254,20 +296,88 @@ class LangfuseTraceStore:
         user_id: str | None = None,
         from_ts: datetime | None = None,
         to_ts: datetime | None = None,
+        *,
+        with_observations: bool = False,
+        max_detail_fetches: int = 50,
     ) -> list[TraceRecord]:
+        """List traces, optionally filling in observation bodies.
+
+        ``with_observations`` defaults to **False**: the list endpoint returns
+        bare observation ids, so fetching bodies costs one detail request per
+        trace. Audit search results are a summary view; only the session-detail
+        page needs bodies, and it passes ``with_observations=True`` with a bound
+        (``max_detail_fetches``) so a 1000-trace session cannot issue 1000
+        sequential round trips.
+        """
         rows = self.list_trace_dicts(
             session_id=session_id, user_id=user_id, from_ts=from_ts, to_ts=to_ts
         )
         records = [normalize_langfuse_trace(row) for row in rows]
+
+        if with_observations:
+            budget = max_detail_fetches
+            enriched: list[TraceRecord] = []
+            for record in records:
+                if record.observations or budget <= 0:
+                    enriched.append(record)
+                    continue
+                budget -= 1
+                enriched.append(self._with_observations(record))
+            records = enriched
+
         return sorted(
             (r for r in records if r.timestamp is not None),
             key=lambda r: r.timestamp,
-        ) or records
+        )
 
-    def list_sessions(self, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
-        """Aggregate sessions from the Langfuse traces API (paged). Mirrors
-        ``LocalTraceStore.list_sessions`` so the audit-web session list works
-        in production mode too."""
+    def _with_observations(self, record: TraceRecord) -> TraceRecord:
+        if record.observations:
+            return record
+        try:
+            detail = self.get_trace_detail(record.trace_id)
+        except Exception:  # noqa: BLE001 - one bad trace must not break the page
+            return record
+        if not detail or not detail.observations:
+            return record
+        return TraceRecord(
+            trace_id=record.trace_id,
+            session_id=record.session_id,
+            user_id=record.user_id,
+            agent_tag=record.agent_tag,
+            name=record.name,
+            timestamp=record.timestamp,
+            observations=detail.observations,
+        )
+
+    def get_trace_detail(self, trace_id: str) -> TraceRecord | None:
+        """Fetch one trace with its observation bodies from the detail API."""
+        resp = self._client.get(f"/api/public/traces/{trace_id}")
+        resp.raise_for_status()
+        try:
+            row = resp.json()
+        except ValueError:
+            return None
+        if not isinstance(row, dict):
+            return None
+        return normalize_langfuse_trace(row)
+
+    def list_sessions(
+        self,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        *,
+        max_pages: int = 1000,
+    ) -> list[dict]:
+        """Aggregate sessions from the Langfuse traces API (paged).
+
+        Time filtering is pushed down to the API (``fromTimestamp`` /
+        ``toTimestamp``) so the server does the work; previously it was applied
+        client-side after a capped crawl, which made ``total`` wrong.
+
+        ``max_pages`` is a safety valve, not a silent truncation: the previous
+        hard cap of 100 pages (10k traces) meant sessions beyond it were
+        unreachable by search. Raise it deliberately for large deployments.
+        """
         from datetime import timezone
 
         sessions: dict[str, dict] = {}
@@ -280,7 +390,7 @@ class LangfuseTraceStore:
                 params["toTimestamp"] = to_ts.astimezone(timezone.utc).isoformat()
             resp = self._client.get("/api/public/traces", params=params)
             resp.raise_for_status()
-            data = resp.json().get("data", [])
+            data = resp.json().get("data", []) or []
             for t in data:
                 sid = t.get("sessionId") or ""
                 entry = sessions.setdefault(
@@ -302,7 +412,8 @@ class LangfuseTraceStore:
                 if isinstance(tags, str):
                     tags = [tags]
                 entry["agent_tags"].update(tags)
-            if len(data) < page_size or page >= 100:  # hard cap: 10k traces
+            # Empty page = done; a short-but-non-empty page may still have more.
+            if not data or page >= max_pages:
                 break
             page += 1
         return [
@@ -322,14 +433,28 @@ class LangfuseTraceStore:
         resp.raise_for_status()
 
     def delete_older_than(self, cutoff: datetime) -> list[str]:
+        """Delete every trace older than *cutoff*, paging until exhausted.
+
+        Deleting while iterating by page is unsafe because the page contents
+        shift as rows disappear; this re-queries from page 1 after each batch
+        instead, and stops when a page comes back empty.
+        """
         from datetime import timezone
 
-        resp = self._client.get(
-            "/api/public/traces",
-            params={"toTimestamp": cutoff.astimezone(timezone.utc).isoformat()},
-        )
-        resp.raise_for_status()
-        ids = [t["id"] for t in resp.json().get("data", [])]
-        for trace_id in ids:
-            self.delete_trace(trace_id)
-        return ids
+        deleted: list[str] = []
+        cutoff_iso = cutoff.astimezone(timezone.utc).isoformat()
+        while True:
+            resp = self._client.get(
+                "/api/public/traces",
+                params={"toTimestamp": cutoff_iso, "page": 1, "limit": 100},
+            )
+            resp.raise_for_status()
+            batch = resp.json().get("data", []) or []
+            if not batch:
+                break
+            for row in batch:
+                trace_id = row.get("id")
+                if trace_id:
+                    self.delete_trace(trace_id)
+                    deleted.append(trace_id)
+        return deleted

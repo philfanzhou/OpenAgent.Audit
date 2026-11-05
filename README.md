@@ -88,7 +88,7 @@ unless a disposable container is reachable:
 docker run -d --name openagent-audit-pg-test \
   -e POSTGRES_USER=audit_owner -e POSTGRES_PASSWORD=testpw \
   -e POSTGRES_DB=openagent_audit -p 15432:5432 \
-  -v "$(pwd)/deploy/audit_db_init.sql:/docker-entrypoint-initdb.d/10_init.sql:ro" \
+  -v "$(pwd)/deploy/10_audit_schema.sql:/docker-entrypoint-initdb.d/10_audit_schema.sql:ro" \
   postgres:17
 ```
 
@@ -100,7 +100,7 @@ all (the structural no-bypass property), and decrypt-svc is the sole reader.
 
 `docker-compose.yml` brings up the full stack (Langfuse v4 + audit-db +
 audit-api + decrypt-svc + masking-gateway + Loki/Promtail); copy `.env.example`
-to `.env` and fill in the secrets. `deploy/audit_db_init.sql` creates the audit
+to `.env` and fill in the secrets. `deploy/10_audit_schema.sql` (applied by `deploy/init_db.sh`) creates the audit
 schema and the application roles with the grant matrix above.
 
 The `masking-gateway` service joins the OpenAgent application network
@@ -115,7 +115,7 @@ Operations:
 
 - **Retention** runs one pass via `python -m openagent_audit.services.retention`
   (schedule with cron / k8s CronJob; in deployment use the `audit_retention`
-  DB role from `deploy/audit_db_init.sql`).
+  DB role per `deploy/10_audit_schema.sql`).
 - **Alerting** — `deploy/alerting/` contains the Prometheus scrape config and
   alert rules for the export drop counters (`dropped_batches > 0` must page
   someone; fail-closed drops are a loss of restorability).
