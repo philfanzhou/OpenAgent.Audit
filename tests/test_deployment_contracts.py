@@ -161,8 +161,25 @@ def test_compose_gateway_requires_auth_and_joins_the_app_network():
 
     assert gateway["environment"]["AUDIT_GATEWAY_REQUIRE_AUTH"] == "true"
     assert "openagent" in gateway["networks"], gateway["networks"]
-    # The platform network is external: audit must not create or own it.
-    assert compose["networks"]["openagent"]["external"] is True
+
+
+def test_compose_owns_both_networks_and_declares_neither_external():
+    """Guards a deadlock that made a fresh two-stack deployment impossible.
+
+    The audit stack and the OpenAgent stack share two networks. If either side
+    declares one of them ``external``, ``docker compose up`` aborts with
+    "network ... declared as external, but could not be found" — each stack
+    waits for the other to create it. This stack therefore owns both networks
+    (no ``external`` flag) and must be started first.
+    """
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    for network in ("default", "openagent"):
+        assert network in compose["networks"], network
+        assert "external" not in compose["networks"][network], (
+            f"network '{network}' must be created by this stack; declaring it external "
+            "deadlocks against the OpenAgent stack's external reference"
+        )
 
 
 def test_compose_does_not_expose_audit_internals_to_the_platform():
