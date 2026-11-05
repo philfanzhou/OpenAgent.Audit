@@ -1,17 +1,44 @@
 """Masking Gateway FastAPI app: OTLP in (from non-Python agents), masked
-OTLP out (to Langfuse), fail-closed, with drop counters for alerting."""
+OTLP out (to Langfuse), fail-closed, with drop counters for alerting.
+
+The gateway is the single ingest point for non-Python agents (the OpenAgent
+.NET platform). It accepts both OTLP transports an OpenTelemetry SDK can emit
+and tolerates every way the SDK composes the endpoint URL, so the agent side
+only has to point ``OTEL_EXPORTER_OTLP_ENDPOINT`` at this service:
+
+======================================  ======================================
+Agent exporter setting                  Route reached
+======================================  ======================================
+``http/protobuf`` (ASP.NET default)     ``POST /v1/traces`` (protobuf body)
+``http/json``                           ``POST /v1/traces`` (JSON body)
+``http/protobuf`` + ``/v1/traces``      ``POST /v1/traces`` (same URL)
+``grpc`` + ``:4317`` base endpoint      ``POST /v1/traces`` (OTLP/gRPC body)
+======================================  ======================================
+
+Whichever transport is used, the *masked* payload forwarded downstream is
+always OTLP/HTTP JSON to Langfuse's native endpoint, so the masking pipeline
+and the ciphertext vault are shared with the Python agent path.
+"""
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from openagent_audit.bootstrap import build_db, build_loki, build_write_cipher
+from openagent_audit.bootstrap import build_db, build_write_cipher
 from openagent_audit.config import Settings
-from openagent_audit.gateway.otlp import process_otlp_payload
+from openagent_audit.gateway.otlp import (
+    GatewayPayloadError,
+    decode_otlp_body,
+    encode_otlp_json,
+    iter_spans,
+    process_otlp_payload,
+)
 from openagent_audit.pii.engine import RuleBasedEngine
 from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
 from openagent_audit.tracing.drop_monitor import DropMonitor
@@ -26,9 +53,45 @@ class GatewayCounters:
     batches_dropped: int = 0          # masking/vault failure (fail-closed)
     forward_failures: int = 0         # Langfuse unreachable after retries
     forwarded_batches: int = 0
+    batches_rejected: int = 0         # undecodable body (protobuf/JSON)
+    batches_unauthorized: int = 0
+    last_forward_error: str = ""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def snapshot(self) -> dict[str, int]:
+    # Every mutation goes through these locked helpers: a bare
+    # ``threading.Lock()`` in a ``with`` statement creates a throwaway lock
+    # (and, worse, raises TypeError under this signature), so it never
+    # protected anything.
+    def record_batch_received(self) -> None:
+        with self._lock:
+            self.batches_received += 1
+
+    def record_spans_masked(self, count: int) -> None:
+        with self._lock:
+            self.spans_masked += count
+
+    def record_batch_dropped(self) -> None:
+        with self._lock:
+            self.batches_dropped += 1
+
+    def record_batch_rejected(self) -> None:
+        with self._lock:
+            self.batches_rejected += 1
+
+    def record_unauthorized(self) -> None:
+        with self._lock:
+            self.batches_unauthorized += 1
+
+    def record_forwarded(self) -> None:
+        with self._lock:
+            self.forwarded_batches += 1
+
+    def record_forward_failure(self, error: str) -> None:
+        with self._lock:
+            self.forward_failures += 1
+            self.last_forward_error = error
+
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "batches_received": self.batches_received,
@@ -36,6 +99,9 @@ class GatewayCounters:
                 "batches_dropped": self.batches_dropped,
                 "forward_failures": self.forward_failures,
                 "forwarded_batches": self.forwarded_batches,
+                "batches_rejected": self.batches_rejected,
+                "batches_unauthorized": self.batches_unauthorized,
+                "last_forward_error": self.last_forward_error,
             }
 
     def has_drops(self) -> bool:
@@ -58,8 +124,7 @@ def build_gateway_deps(settings: Settings | None = None) -> GatewayDeps:
 
     def forwarder(payload: bytes) -> None:
         # Langfuse natively ingests OTLP/HTTP JSON on this endpoint.
-        if not _forward_via_httpx(settings, payload):
-            raise RuntimeError("langfuse forward failed")
+        _forward_via_httpx(settings, payload)
 
     db = build_db(settings)
     pipeline = MaskingPipeline(
@@ -70,8 +135,13 @@ def build_gateway_deps(settings: Settings | None = None) -> GatewayDeps:
     return GatewayDeps(settings=settings, pipeline=pipeline, forwarder=forwarder)
 
 
-def _forward_via_httpx(settings: Settings, payload: bytes) -> bool:
-    """POST the masked OTLP/JSON payload to Langfuse with bounded retries."""
+def _forward_via_httpx(settings: Settings, payload: bytes) -> None:
+    """POST the masked OTLP/JSON payload to Langfuse with bounded retries.
+
+    Raises ``RuntimeError`` carrying the last transport/HTTP error so the
+    gateway's counters and ``/internal/metrics`` surface an actionable reason
+    instead of a bare "forward failed".
+    """
     import time
 
     import httpx
@@ -88,12 +158,51 @@ def _forward_via_httpx(settings: Settings, payload: bytes) -> bool:
                     auth=(settings.langfuse_public_key, settings.langfuse_secret_key),
                 )
             if resp.status_code < 300:
-                return True
-            last_error = RuntimeError(f"langfuse responded {resp.status_code}")
+                return
+            last_error = RuntimeError(
+                f"langfuse responded {resp.status_code}: {resp.text[:200]}"
+            )
         except Exception as exc:  # noqa: BLE001 - retried below
             last_error = exc
-        time.sleep(min(0.5 * (2**attempt), 4.0))
-    raise RuntimeError(f"langfuse forward failed after retries") from last_error
+        if attempt < 2:
+            time.sleep(min(0.5 * (2**attempt), 4.0))
+    raise RuntimeError(f"langfuse forward failed after retries: {last_error}") from last_error
+
+
+def _authorize(settings: Settings, request: Request) -> bool:
+    """Bearer token check for OTLP ingest.
+
+    Uses ``hmac.compare_digest`` so the comparison is constant-time, and
+    accepts the token either as ``Authorization: Bearer <token>`` (what we
+    tell agents to send) or as ``x-api-key: <token>`` (the header form
+    OpenTelemetry's stock environment variables write most naturally).
+    Authentication is disabled only when no token is configured (dev), and
+    ``AUDIT_GATEWAY_REQUIRE_AUTH`` forces it on regardless (production).
+    """
+    expected = settings.gateway_ingest_token
+    if not expected:
+        if settings.gateway_require_auth:
+            return False
+        return True
+
+    import hmac
+
+    candidates: list[str] = []
+    header = request.headers.get("Authorization", "")
+    if header[:7].lower() == "bearer ":
+        candidates.append(header[7:].strip())
+    api_key = request.headers.get("x-api-key", "").strip()
+    if api_key:
+        candidates.append(api_key)
+    return any(hmac.compare_digest(token, expected) for token in candidates)
+
+
+def _count_spans(deps: GatewayDeps) -> Callable[[int], None]:
+    def _record(n: int) -> None:
+        deps.counters.record_spans_masked(n)
+        deps.drop_monitor.record_spans_patched(n)
+
+    return _record
 
 
 def create_gateway_app(deps: GatewayDeps | None = None) -> FastAPI:
@@ -113,25 +222,28 @@ def create_gateway_app(deps: GatewayDeps | None = None) -> FastAPI:
             "drops": deps.drop_monitor.snapshot(),
         }
 
-    @app.post("/v1/traces")
-    async def ingest_traces(request: Request):
-        # ingest auth (bearer); disabled only when no token is configured (dev)
-        expected = settings.gateway_ingest_token
-        if expected:
-            header = request.headers.get("Authorization", "")
-            if header != f"Bearer {expected}":
-                return JSONResponse({"detail": "无效的网关访问令牌"}, status_code=401)
-        try:
-            payload = await request.json()
-        except Exception:
-            return JSONResponse({"detail": "请求体不是合法 JSON"}, status_code=400)
+    def _ingest(request: Request, body: bytes, path_style: str):
+        if not _authorize(settings, request):
+            counters.record_unauthorized()
+            return JSONResponse(
+                {"detail": "无效的网关访问令牌（Authorization: Bearer / x-api-key）"},
+                status_code=401,
+            )
 
-        with threading.Lock():
-            counters.batches_received += 1
-        def _count_spans(n: int) -> None:
-            with threading.Lock():
-                counters.spans_masked += n
-            deps.drop_monitor.record_spans_patched(n)
+        counters.record_batch_received()
+        try:
+            payload = decode_otlp_body(
+                body, content_type=request.headers.get("content-type", "")
+            )
+        except GatewayPayloadError as exc:
+            counters.record_batch_rejected()
+            return JSONResponse(
+                {"detail": f"请求体无法解析为 OTLP: {exc}"}, status_code=400
+            )
+
+        if not any(iter_spans(payload)):
+            # Valid but empty export: nothing to mask or forward.
+            return {"ok": True, "spans": 0, "transport": path_style}
 
         try:
             process_otlp_payload(
@@ -141,34 +253,55 @@ def create_gateway_app(deps: GatewayDeps | None = None) -> FastAPI:
                 session_attrs=settings.gateway_session_attrs,
                 user_attrs=settings.gateway_user_attrs,
                 agent_attrs=settings.gateway_agent_attrs,
-                on_batch_masked=_count_spans,
+                on_batch_masked=_count_spans(deps),
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - fail-closed by design
             # fail-closed: masking/vault failure -> drop the batch, never forward
-            with threading.Lock():
-                counters.batches_dropped += 1
+            counters.record_batch_dropped()
             deps.drop_monitor.record_batch_dropped()
             deps.drop_monitor.record_vault_failure()
             return JSONResponse(
-                {"detail": "脱敏处理失败，批次已丢弃（fail-closed），请检查网关与审计库。"},
+                {
+                    "detail": "脱敏处理失败，批次已丢弃（fail-closed），请检查网关与审计库。",
+                    "error": type(exc).__name__,
+                },
                 status_code=500,
             )
 
         try:
-            import json
-
-            deps.forwarder(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-            with threading.Lock():
-                counters.forwarded_batches += 1
-        except Exception:
+            deps.forwarder(encode_otlp_json(payload))
+        except Exception as exc:  # noqa: BLE001 - masked data only, counted
             # masked data only — losing it is an observability loss, not a leak
-            with threading.Lock():
-                counters.forward_failures += 1
+            counters.record_forward_failure(str(exc))
             return JSONResponse(
                 {"detail": "掩码完成，但转发 Langfuse 失败（已计数告警）"},
                 status_code=502,
             )
-        return {"ok": True, "drops": counters.snapshot()}
+        counters.record_forwarded()
+        return {"ok": True, "transport": path_style}
+
+    # The same ingest logic answers every route an OpenTelemetry SDK can end
+    # up calling. ``/v1/traces`` is canonical; the others exist because the
+    # SDK only appends the signal path when the configured endpoint has no
+    # path of its own (so ``.../<host>:<port>/v1/traces`` can become
+    # ``.../v1/traces/v1/traces``), and because a ``grpc``-configured endpoint
+    # posts OTLP/gRPC framing to the base URL.
+    async def ingest_traces(request: Request):
+        return _ingest(request, await request.body(), "http")
+
+    for route in (
+        "/v1/traces",
+        # An SDK given ".../<host>:<port>/v1/traces" with no signal path of its
+        # own appends one more segment; answer it instead of 404-ing.
+        "/v1/traces/v1/traces",
+        # protocol=grpc exporters address the service by its fully qualified
+        # name; the framing is unwrapped inside decode_otlp_body.
+        "/opentelemetry.proto.collector.trace.v1.TraceService/Export",
+        # A grpc-configured exporter posts to the configured endpoint
+        # verbatim; only reachable when the agent configured <host>:<port>.
+        "/",
+    ):
+        app.add_api_route(route, ingest_traces, methods=["POST"], response_model=None)
 
     return app
 

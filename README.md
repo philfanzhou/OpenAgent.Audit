@@ -39,6 +39,9 @@ src/openagent_audit/
 │   ├── trace_store.py         #   Langfuse API adapter + local dev store
 │   └── langfuse_setup.py
 ├── media/                     # client-side encrypted media (s3:// references)
+├── gateway/                   # Masking Gateway: OTLP ingest for non-Python agents
+│   ├── app.py                 #   bearer/x-api-key auth, fail-closed counters
+│   └── otlp.py                #   protobuf/gRPC decoding, mask+seal, JSON re-encode
 ├── alerts/loki.py             # audit-event copies for alerting only
 ├── services/                  # read side
 │   ├── audit_api.py           #   audit-api REST + audit-web UI (3 roles)
@@ -52,7 +55,7 @@ src/openagent_audit/
 ### Quick start (dev, no external services)
 
 ```bash
-pip install -e ".[dev,langfuse,postgres,s3]"
+pip install -e ".[dev,langfuse,postgres,s3,otlp]"
 python scripts/provision_keys.py --out keys --passphrase "..."
 set AUDIT_USERS=token-a:alice:auditor,token-b:bob:compliance_lead,token-c:carol:compliance_lead
 set AUDIT_PRIVATE_KEY_PATH=keys/audit_private_key.pem
@@ -60,15 +63,22 @@ set AUDIT_PRIVATE_KEY_PASSPHRASE=...
 set AUDIT_PUBLIC_KEY_PATH=keys/audit_public_key.pem
 uvicorn openagent_audit.services.audit_api:create_app --factory --port 8100   # audit-api + audit-web
 uvicorn openagent_audit.services.decrypt_app:app --port 8101                  # decrypt-svc
+uvicorn openagent_audit.gateway.app:create_app --factory --port 8102          # masking gateway (OpenAgent .NET ingest)
 ```
 
 Open `http://localhost:8100/ui/login` and sign in with a token from `AUDIT_USERS`.
 
+The masking gateway accepts OTLP over `http/protobuf` (ASP.NET Core's default),
+`http/json` and gRPC framing, and forwards masked OTLP/JSON to Langfuse. The
+`otlp` extra is only needed for the protobuf/gRPC transports; the Docker image
+installs it.
+
 ### Tests
 
 ```bash
-python -m pytest tests -q          # 146 tests pass (3 Postgres integration tests skip without a container)
+python -m pytest tests -q          # 198 tests pass (3 Postgres integration tests skip without a container)
 python scripts/smoke_e2e.py        # boots both services under real uvicorn, exercises audit-api -> decrypt-svc over HTTP
+python scripts/smoke_gateway_otlp.py  # boots the gateway + a fake Langfuse, drives real protobuf/gRPC/JSON exports
 ```
 
 The Postgres integration tests (`tests/test_postgres_integration.py`) auto-skip
@@ -89,9 +99,17 @@ all (the structural no-bypass property), and decrypt-svc is the sole reader.
 ### Deployment
 
 `docker-compose.yml` brings up the full stack (Langfuse v4 + audit-db +
-audit-api + decrypt-svc + Loki/Promtail); copy `.env.example` to `.env` and
-fill in the secrets. `deploy/audit_db_init.sql` creates the audit schema and
-the application roles with the grant matrix above.
+audit-api + decrypt-svc + masking-gateway + Loki/Promtail); copy `.env.example`
+to `.env` and fill in the secrets. `deploy/audit_db_init.sql` creates the audit
+schema and the application roles with the grant matrix above.
+
+The `masking-gateway` service joins the OpenAgent application network
+(`OPENAGENT_APP_NETWORK`, default `openagent`) so the .NET platform can reach
+it by service name; nothing else in this stack is published to that network.
+
+Promtail discovers containers through the Docker socket because the OpenAgent
+services log to **container stdout** (Serilog console sink), not to files —
+see `deploy/promtail/promtail-config.yml`.
 
 Operations:
 

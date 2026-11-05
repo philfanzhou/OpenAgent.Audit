@@ -8,6 +8,8 @@ htmlcov/
 data/
 keys/
 .env
+.venv/
+venv/
 
 frontend/node_modules/
 frontend/dist/

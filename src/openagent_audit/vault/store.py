@@ -237,9 +237,24 @@ class SQLiteAuditDatabase:
             rows = conn.execute("SELECT * FROM audit_log ORDER BY seq ASC").fetchall()
         return [self._audit_row(r) for r in rows]
 
-    def count_entities(self) -> int:
+    def count_entities(self, q: str | None = None) -> int:
+        """Count ciphertext rows; ``q`` mirrors the Postgres twin's filter.
+
+        audit-api always calls this without ``q`` (its role holds no SELECT on
+        the vault), but keeping the two implementations signature-compatible
+        stops a caller from silently breaking under one backend only.
+        """
+        query = "SELECT COUNT(*) FROM entity_ciphertext"
+        params: list[object] = []
+        if q:
+            query += (
+                " WHERE entity_id LIKE ? OR entity_type LIKE ?"
+                " OR trace_id LIKE ? OR session_id LIKE ?"
+            )
+            like = f"%{q}%"
+            params = [like, like, like, like]
         with self._connect() as conn:
-            (n,) = conn.execute("SELECT COUNT(*) FROM entity_ciphertext").fetchone()
+            (n,) = conn.execute(query, params).fetchone()
         return int(n)
 
     def count_audit_entries(self, q: str | None = None) -> int:

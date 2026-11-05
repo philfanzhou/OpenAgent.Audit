@@ -121,6 +121,10 @@ class Settings:
     # --- Masking Gateway (OTLP ingest for non-Python agents, e.g. OpenAgent .NET)
     # Bearer token required on POST /v1/traces; empty disables auth (dev only).
     gateway_ingest_token: str = ""
+    # When true, an empty token is a configuration error rather than "auth
+    # disabled" — set this in every real deployment so a missing token can
+    # never silently open the gateway to unauthenticated plaintext ingress.
+    gateway_require_auth: bool = False
     # Mask string span attributes whose key starts with any of these prefixes.
     gateway_content_prefixes: tuple[str, ...] = (
         "gen_ai.", "langfuse.observation", "llm.", "prompt", "completion",
@@ -185,6 +189,8 @@ class Settings:
             pii_backend=e.get("AUDIT_PII_BACKEND", "rules"),
             demo_seed=e.get("AUDIT_DEMO_SEED", "").lower() in ("1", "true", "yes", "on"),
             gateway_ingest_token=e.get("AUDIT_GATEWAY_TOKEN", ""),
+            gateway_require_auth=e.get("AUDIT_GATEWAY_REQUIRE_AUTH", "").lower()
+            in ("1", "true", "yes", "on"),
             gateway_content_prefixes=_csv_or_default(
                 e.get("AUDIT_GATEWAY_CONTENT_PREFIXES"), DEFAULT_CONTENT_PREFIXES),
             gateway_session_attrs=_csv_or_default(

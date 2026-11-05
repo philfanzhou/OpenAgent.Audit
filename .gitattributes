@@ -1,0 +1,25 @@
+# Normalise all text to LF in the repository.
+#
+# These files are consumed inside Linux containers (docker-compose, systemd-
+# free uvicorn images, Promtail/Loki configs, psql init scripts, shell
+# scripts), and both developer machines here run with core.autocrlf=true.
+# Without this, a Windows checkout produced CRLF copies of docker-compose.yml,
+# deploy/audit_db_init.sql and the Promtail config, which break shell
+# snippets, `/bin/sh -c` entrypoints and YAML block scalars.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.sql       text eol=lf
+*.py        text eol=lf
+*.html      text eol=lf
+*.vue       text eol=lf
+*.js        text eol=lf
+
+*.png       binary
+*.jpg       binary
+*.pdf       binary
