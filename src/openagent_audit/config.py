@@ -128,6 +128,12 @@ class Settings:
     # disabled" — set this in every real deployment so a missing token can
     # never silently open the gateway to unauthenticated plaintext ingress.
     gateway_require_auth: bool = False
+    # Ingest limits: a single OTLP export larger than this is rejected with
+    # 413 before it is buffered, and a batch with more spans than the cap is
+    # rejected as well. Both bound the work one POST can force on the process
+    # that holds the masking and key duties.
+    gateway_max_body_bytes: int = 16 * 1024 * 1024
+    gateway_max_spans: int = 5000
     # Mask string span attributes whose key starts with any of these prefixes.
     gateway_content_prefixes: tuple[str, ...] = (
         "gen_ai.", "langfuse.observation", "llm.", "prompt", "completion",
@@ -194,6 +200,8 @@ class Settings:
             pii_backend=e.get("AUDIT_PII_BACKEND", "rules"),
             demo_seed=e.get("AUDIT_DEMO_SEED", "").lower() in ("1", "true", "yes", "on"),
             gateway_ingest_token=e.get("AUDIT_GATEWAY_TOKEN", ""),
+            gateway_max_body_bytes=int(e.get("AUDIT_GATEWAY_MAX_BODY_BYTES", str(16 * 1024 * 1024))),
+            gateway_max_spans=int(e.get("AUDIT_GATEWAY_MAX_SPANS", "5000")),
             gateway_require_auth=e.get("AUDIT_GATEWAY_REQUIRE_AUTH", "").lower()
             in ("1", "true", "yes", "on"),
             gateway_content_prefixes=_csv_or_default(
