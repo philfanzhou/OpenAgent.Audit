@@ -88,8 +88,13 @@ def test_retention_archives_old_entries(db, pipeline, tmp_path):
     import json as jsonlib
     from pathlib import Path
 
-    files = list(Path(tmp_path / "objects" / "audit-archive").rglob("*.jsonl"))
+    files = list(Path(tmp_path / "objects").rglob("*.jsonl"))
     assert files, "archive file missing"
+    # Keys are plain date paths now ("2026/10/20/...jsonl"): the archive has a
+    # dedicated bucket, so it must not carry a nested "audit-archive/" prefix
+    # that previously put it inside the media bucket.
+    relative = files[0].relative_to(Path(tmp_path / "objects"))
+    assert "audit-archive" not in str(relative), relative
     lines = [jsonlib.loads(l) for l in files[0].read_text(encoding="utf-8").splitlines()]
     assert all("entry_hash" in l for l in lines)
     # second run archives only new entries since none remain beyond cutoff

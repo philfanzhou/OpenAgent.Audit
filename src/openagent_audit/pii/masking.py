@@ -148,6 +148,16 @@ class VaultWriter:
         self._attempts = attempts
 
     def write(self, rows: Sequence[Mapping[str, object]]) -> None:
+        """Insert *rows* atomically.
+
+        The vault adapter inserts the whole sequence in one statement/transaction,
+        so either every ciphertext row lands or none does. Retrying is safe
+        because ``entity_id`` is a random primary key generated per call: a
+        replayed batch can only attempt fresh ids, never duplicate an existing
+        entity, and a partially-applied batch never persists.
+        """
+        if not rows:
+            return
         last_error: Exception | None = None
         for attempt in range(self._attempts):
             try:
@@ -158,6 +168,64 @@ class VaultWriter:
                 if attempt + 1 < self._attempts:
                     time.sleep(min(0.5 * (2**attempt), 4.0))  # bounded backoff
         raise RuntimeError(f"vault write failed after {self._attempts} attempts") from last_error
+
+
+class protect_batch:
+    """Collect entities for a whole batch and write them once.
+
+    Without this, ``protect()`` wrote per field: if field 1 succeeded and
+    field 2 failed, the batch was dropped (fail-closed) but field 1's
+    ciphertext stayed in the vault forever — an orphan row whose masked
+    placeholder was never forwarded, and which no restore request could ever
+    reference legitimately.
+
+    Usage (masking pipeline)::
+
+        with pipeline.batch(trace_id=..., session_id=...) as batch:
+            batch.protect(text_a)
+            batch.protect(text_b)      # all rows flushed together
+    """
+
+    def __init__(self, pipeline: "MaskingPipeline", *, trace_id=None, session_id=None) -> None:
+        self._pipeline = pipeline
+        self._trace_id = trace_id
+        self._session_id = session_id
+        self._rows: list[dict] = []
+        self._results: list[ProtectResult] = []
+
+    def protect(self, text: str) -> ProtectResult:
+        """Mask *text* without persisting anything yet."""
+        result = self._pipeline._protect_local(text)  # noqa: SLF001 - same module
+        self._results.append(result)
+        for record in result.entities:
+            self._rows.append(
+                {
+                    "entity_id": record.entity_id,
+                    "entity_type": record.entity_type,
+                    "ciphertext": record.ciphertext,
+                    "trace_id": self._trace_id,
+                    "session_id": self._session_id,
+                }
+            )
+        return result
+
+    def flush(self) -> None:
+        """Persist every collected row in one atomic write."""
+        writer = self._pipeline._vault_writer  # noqa: SLF001
+        if self._rows and writer is not None and self._pipeline._cipher is not None:  # noqa: SLF001
+            writer.write(self._rows)
+            self._rows = []
+
+    def __enter__(self) -> "protect_batch":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        # A failure above means the caller will drop the batch: persist nothing,
+        # so the vault and the forwarded trace stay consistent.
+        if exc_type is not None:
+            self._rows = []
+            return
+        self.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +257,32 @@ class MaskingPipeline:
         trace_id: str | None = None,
         session_id: str | None = None,
     ) -> ProtectResult:
+        result = self._protect_local(text)
+        if result.entities and self._vault_writer is not None and self._cipher is not None:
+            self._vault_writer.write(
+                [
+                    {
+                        "entity_id": r.entity_id,
+                        "entity_type": r.entity_type,
+                        "ciphertext": r.ciphertext,
+                        "trace_id": trace_id,
+                        "session_id": session_id,
+                    }
+                    for r in result.entities
+                ]
+            )
+        return result
+
+    def batch(self, *, trace_id: str | None = None, session_id: str | None = None) -> protect_batch:
+        """Mask several fields and persist their entities in ONE write.
+
+        Prefer this when masking a whole trace: a mid-batch failure then
+        leaves no orphan ciphertext behind (see :func:`protect_batch`).
+        """
+        return protect_batch(self, trace_id=trace_id, session_id=session_id)
+
+    def _protect_local(self, text: str) -> ProtectResult:
+        """Detect, seal and rewrite *text* — never touches the vault."""
         if not text:
             return ProtectResult(masked_text=text, entities=())
         key = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -233,19 +327,6 @@ class MaskingPipeline:
         pieces.append(text[last:])
         result = ProtectResult(masked_text="".join(pieces), entities=tuple(records))
 
-        if records and self._vault_writer is not None and self._cipher is not None:
-            self._vault_writer.write(
-                [
-                    {
-                        "entity_id": r.entity_id,
-                        "entity_type": r.entity_type,
-                        "ciphertext": r.ciphertext,
-                        "trace_id": trace_id,
-                        "session_id": session_id,
-                    }
-                    for r in records
-                ]
-            )
         with self._count_lock:
             self.entities_masked += len(records)
         return result

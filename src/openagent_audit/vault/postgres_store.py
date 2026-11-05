@@ -23,7 +23,7 @@ from openagent_audit.vault.models import (
 
 
 class PostgresAuditDatabase:
-    def __init__(self, dsn: str, *, now=None) -> None:
+    def __init__(self, dsn: str, *, now=None, verify_schema: bool = True) -> None:
         try:
             import psycopg  # noqa: F401
         except ImportError as exc:  # pragma: no cover - depends on extras
@@ -32,59 +32,49 @@ class PostgresAuditDatabase:
             ) from exc
         self._dsn = dsn
         self._now = now or (lambda: datetime.now().astimezone())
-        self.init_schema()
+        if verify_schema:
+            # Schema and grants are created by deploy/10_audit_schema.sql at
+            # provisioning time. Application roles have no CREATE privilege,
+            # so executing DDL here would fail — and widening those grants to
+            # make startup work would defeat the entire privilege split.
+            self._verify_schema()
 
     def _connect(self):
         import psycopg
 
         return psycopg.connect(self._dsn)
 
-    def init_schema(self) -> None:
+    def _verify_schema(self) -> None:
+        """Fail fast when the database has not been provisioned.
+
+        A service that starts against an empty database would appear healthy
+        while silently dropping every write, so a missing schema is treated as
+        a startup error with an actionable message.
+        """
+        required = ("entity_ciphertext", "audit_log", "restore_request")
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS entity_ciphertext (
-                    entity_id   TEXT PRIMARY KEY,
-                    entity_type TEXT NOT NULL,
-                    ciphertext  TEXT NOT NULL,
-                    trace_id    TEXT,
-                    session_id  TEXT,
-                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-                );
-                CREATE INDEX IF NOT EXISTS ix_entity_session ON entity_ciphertext(session_id);
-                CREATE INDEX IF NOT EXISTS ix_entity_trace ON entity_ciphertext(trace_id);
-                CREATE INDEX IF NOT EXISTS ix_entity_created ON entity_ciphertext(created_at);
+            rows = conn.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+            ).fetchall()
+        present = {row[0] for row in rows}
+        missing = [t for t in required if t not in present]
 
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    seq         BIGSERIAL PRIMARY KEY,
-                    ts          TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    actor       TEXT NOT NULL,
-                    role        TEXT NOT NULL,
-                    action      TEXT NOT NULL,
-                    object_type TEXT,
-                    object_id   TEXT,
-                    detail      JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    prev_hash   TEXT NOT NULL,
-                    entry_hash  TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS restore_request (
-                    id                TEXT PRIMARY KEY,
-                    object_type       TEXT NOT NULL,
-                    object_id         TEXT NOT NULL,
-                    reason            TEXT NOT NULL,
-                    requested_by      TEXT NOT NULL,
-                    trace_id          TEXT,
-                    session_id        TEXT,
-                    status            TEXT NOT NULL,
-                    approver          TEXT,
-                    decision_comment  TEXT,
-                    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    decided_at        TIMESTAMPTZ,
-                    reveal_expires_at TIMESTAMPTZ
-                );
-                """
+        if missing:
+            raise RuntimeError(
+                "audit database schema is missing: "
+                + ", ".join(missing)
+                + ". Apply deploy/10_audit_schema.sql as the schema owner "
+                "(audit_owner) before starting the application services; "
+                "application roles intentionally have no DDL privileges."
             )
+
+    def init_schema(self) -> None:  # noqa: D401 - kept for API compatibility
+        """No-op: DDL is performed by the provisioning script, not at runtime.
+
+        Retained so callers written against the SQLite twin still work; it
+        validates rather than creates.
+        """
+        self._verify_schema()
 
     # -- ciphertext vault ---------------------------------------------------
     def insert_entities(self, rows: Sequence[Mapping[str, object]]) -> None:

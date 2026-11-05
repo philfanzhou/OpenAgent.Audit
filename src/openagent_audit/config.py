@@ -88,6 +88,9 @@ class Settings:
     object_store: str = "local"
     object_store_root: str = "./data/objects"
     media_bucket: str = "agent-media"
+    # Dedicated Object-Lock bucket for the audit-log archive (never the media bucket).
+    archive_bucket: str = "audit-archive"
+    archive_retention_days: int = 3650
     s3_endpoint: str = ""
     s3_access_key: str = ""
     s3_secret_key: str = ""
@@ -174,6 +177,8 @@ class Settings:
             object_store=e.get("AUDIT_OBJECT_STORE", "local"),
             object_store_root=e.get("AUDIT_OBJECT_STORE_ROOT", "./data/objects"),
             media_bucket=e.get("AUDIT_MEDIA_BUCKET", "agent-media"),
+            archive_bucket=e.get("AUDIT_ARCHIVE_BUCKET", "audit-archive"),
+            archive_retention_days=int(e.get("AUDIT_ARCHIVE_RETENTION_DAYS", "3650")),
             s3_endpoint=e.get("AUDIT_S3_ENDPOINT", ""),
             s3_access_key=e.get("AUDIT_S3_ACCESS_KEY", ""),
             s3_secret_key=e.get("AUDIT_S3_SECRET_KEY", ""),
@@ -206,6 +211,28 @@ class Settings:
             if u.token == token:
                 return u
         return None
+
+    def __post_init__(self) -> None:
+        """Reject compliance knobs outside their safe operating range.
+
+        These values gate how long plaintext stays revealable (``reveal_ttl``)
+        and how long evidence is kept (``retention``). A typo such as
+        ``AUDIT_REVEAL_TTL_MINUTES=100000`` would silently hold a decryption
+        window open for weeks, so it fails at construction instead.
+        """
+        if not 1 <= self.reveal_ttl_minutes <= 1440:
+            raise ValueError(
+                f"AUDIT_REVEAL_TTL_MINUTES must be between 1 and 1440, got {self.reveal_ttl_minutes}"
+            )
+        if not 1 <= self.trace_retention_days <= 3650:
+            raise ValueError(
+                f"AUDIT_TRACE_RETENTION_DAYS must be between 1 and 3650, got {self.trace_retention_days}"
+            )
+        if not 1 <= self.audit_archive_after_days <= self.trace_retention_days:
+            raise ValueError(
+                "AUDIT_ARCHIVE_AFTER_DAYS must be >= 1 and <= AUDIT_TRACE_RETENTION_DAYS "
+                f"(got {self.audit_archive_after_days} vs {self.trace_retention_days})"
+            )
 
 
 def _parse_users(raw: str) -> tuple[UserEntry, ...]:

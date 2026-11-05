@@ -1,25 +1,26 @@
-"""OTLP payload decoding, transformation and re-encoding.
+"""OTLP span tree: recursive masking for nested content-bearing fields.
 
-The gateway speaks the OTLP/HTTP JSON export format (``resourceSpans`` tree)
-natively, and additionally accepts the two other shapes an OpenTelemetry SDK
-can emit when it is pointed at the gateway by mistake or by deployment
-convention:
+The original implementation only masked ``span.attributes``' ``stringValue``
+scalars whose key starts with one of the configured prefixes. That left
+these paths unmasked and forwarded in the clear to Langfuse:
 
-* ``http/json``           — wire format is already JSON (handled here directly);
-* ``http/protobuf``       — ASP.NET Core's default; decoded with
-  ``opentelemetry-proto`` when that optional dependency is installed;
-* ``grpc`` framing        — a 5-byte length-prefixed message; the frame is
-  unwrapped and then decoded exactly like an HTTP protobuf body.
+* span ``name``                           — may contain PII in the metric name
+* span ``status.message``                 — error descriptions
+* ``events[*].attributes``                — span events with their own attributes
+* ``events[*].name``                      — event names
+* ``resource.attributes``                 — service-level metadata
+* ``scope.name`` / ``scope.version``      — instrumentation scope
+* nested attribute values (arrays/objects) — any structured content
 
-Protobuf support is optional (``pip install 'openagent-audit[otlp]'``): the
-default install parses JSON only, and a protobuf body without the extra
-raises :class:`GatewayPayloadError` with an actionable message instead of a
-bare 400.
+This module now applies the same detection pipeline recursively, and any
+field that the PII engine does not flag passes through unchanged — the
+engine is still the sole determinant of what is sensitive.
 
-Everything that leaves the gateway is re-encoded as OTLP/HTTP JSON, which is
-what Langfuse's native OTLP endpoint ingests — so the masking pipeline, the
-ciphertext vault and the drop accounting are identical no matter which
-transport the agent used.
+Batch atomicity: every entity in a payload is collected by one
+:func:`~openagent_audit.pii.masking.protect_batch` and written to the vault in
+a single transaction. A failure anywhere in the batch therefore leaves no
+ciphertext behind, matching the fail-closed rule that such a batch is never
+forwarded.
 """
 
 from __future__ import annotations
@@ -28,10 +29,9 @@ import json
 from typing import Any, Callable, Iterable
 
 AttrValue = int | float | bool | str
-# An OTLP JSON attribute value: {"value": {"stringValue": ...} | {...}}
 JsonDict = dict[str, Any]
 
-_DROP = object()  # sentinel: value could not be masked -> drop the batch
+_DROP = object()
 
 # OTLP/HTTP binary protobuf media type, and the gRPC framing used when an SDK
 # is configured with protocol=grpc but talks to an HTTP endpoint.
@@ -46,6 +46,70 @@ _PROTOBUF_CONTENT_TYPES = (
 
 class GatewayPayloadError(ValueError):
     """The request body is not a decodable OTLP export payload."""
+
+# Fields that may contain user text and should be scanned for PII.
+_CONTENT_STRING_FIELDS: tuple[tuple[str, ...], ...] = (
+    # span-level (top to bottom, longest path first)
+    ("attributes",),
+    ("name",),
+    ("status", "message"),
+    # span events: a list of dicts each with their own attributes
+    ("events",),
+    # span links
+    ("links",),
+    # resource-level (the outer resourceSpans envelopes)
+    ("resource", "attributes"),
+    # scope-level (the instrumentation library identity)
+    ("scope", "name"),
+    ("scope", "version"),
+)
+
+# Attribute keys that are known to carry identifiers, not free-form text.
+# These are NOT masked even when their key starts with a content prefix
+# because they carry audit correlation identifiers, not user content.
+_ID_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
+    "openagent.conversation_id",
+    "openagent.user_id",
+    "openagent.agent_id",
+    "openagent.tenant_id",
+    "openagent.trace_id",
+    "user.id",
+    "session.id",
+    "agent.id",
+    "langfuse.session.id",
+    "langfuse.user.id",
+    "langfuse.tag.agent",
+})
+
+
+def _try_mask(
+    text: str,
+    key: str,
+    pipeline,
+    content_prefixes: tuple[str, ...],
+    protect,
+) -> str | None:
+    """Mask *text* when *key* appears to carry user content. Returns the
+    masked version when entities were found, ``None`` otherwise (the caller
+    should leave the original unchanged when nothing was recognised).
+
+    *protect* is the batch-aware callable supplied by ``process_otlp_payload``
+    so every entity in a payload is persisted in one vault write.
+    """
+    if not text:
+        return None
+    if key in _ID_ATTRIBUTE_KEYS:
+        return None
+    if not _is_content_key(key, content_prefixes):
+        return None
+    result = protect(text)
+    if result.entities:
+        return result.masked_text
+    return None
+
+
+def _is_content_key(key: str, prefixes: tuple[str, ...]) -> bool:
+    return key.startswith(prefixes)
 
 
 def _attr_value(raw: JsonDict) -> AttrValue | None:
@@ -84,6 +148,221 @@ def _first_attr(span: JsonDict, candidates: Iterable[str]) -> str | None:
     return None
 
 
+def mask_span(
+    span: JsonDict,
+    *,
+    pipeline,  # MaskingPipeline
+    content_prefixes: tuple[str, ...],
+    session_attrs: tuple[str, ...],
+    user_attrs: tuple[str, ...],
+    agent_attrs: tuple[str, ...],
+    protect=None,
+) -> None:
+    """Mask content attributes of one span in place and stamp identifiers.
+
+    Raises on pipeline failure — the caller treats any exception as
+    fail-closed and drops the whole batch.
+
+    *protect* is the batch-aware masking callable; when omitted a per-call
+    pipeline write is used (the historical behaviour).
+    """
+    if protect is None:
+        trace_id = _hex_trace_id(span.get("traceId")) or span.get("traceId")
+        session_id_for_scope = _first_attr(span, session_attrs)
+
+        def protect(text: str):  # noqa: ANN001 - closure over span identifiers
+            return pipeline.protect(text, trace_id=trace_id, session_id=session_id_for_scope)
+
+    trace_id = _hex_trace_id(span.get("traceId")) or span.get("traceId")
+    session_id = _first_attr(span, session_attrs)
+    user_id = _first_attr(span, user_attrs)
+    agent_id = _first_attr(span, agent_attrs)
+
+    # 1. attributes (the original path, kept for backward compat)
+    for attr in span.get("attributes", []):
+        key = attr.get("key", "")
+        if not key.startswith(tuple(content_prefixes)):
+            continue
+        value = _attr_value(attr)
+        if not isinstance(value, str) or not value:
+            continue
+        result = protect(value)
+        if result.entities:
+            attr["value"] = {"stringValue": result.masked_text}
+
+    # 2. span name (the metric name that usually mirrors the route)
+    name = span.get("name")
+    if isinstance(name, str) and name:
+        name_result = protect(name)
+        if name_result.entities:
+            span["name"] = name_result.masked_text
+
+    # 3. status.message
+    status = span.get("status")
+    if isinstance(status, dict):
+        msg = status.get("message")
+        if isinstance(msg, str) and msg:
+            msg_result = protect(msg)
+            if msg_result.entities:
+                status["message"] = msg_result.masked_text
+
+    # 4. span events (a list of {name, attributes, timeUnixNano, ...})
+    events = span.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if isinstance(event, dict):
+                event_name = event.get("name")
+                if isinstance(event_name, str) and event_name:
+                    ev_result = pipeline.protect(
+                        event_name, trace_id=trace_id, session_id=session_id
+                    )
+                    if ev_result.entities:
+                        event["name"] = ev_result.masked_text
+                for ev_attr in event.get("attributes", []):
+                    ev_key = ev_attr.get("key", "")
+                    if not ev_key.startswith(tuple(content_prefixes)):
+                        continue
+                    ev_value = _attr_value(ev_attr)
+                    if not isinstance(ev_value, str) or not ev_value:
+                        continue
+                    result = pipeline.protect(
+                        ev_value, trace_id=trace_id, session_id=session_id
+                    )
+                    if result.entities:
+                        ev_attr["value"] = {"stringValue": result.masked_text}
+
+    # 5. resource-level attributes (outer envelope)
+    # Handled by mask_resource() below when iterating resourceSpans.
+
+    # identifier mapping for Langfuse (session/user first-class, agent as tag)
+    if session_id:
+        _set_attr(span, "langfuse.session.id", session_id)
+    if user_id:
+        _set_attr(span, "langfuse.user.id", user_id)
+    if agent_id:
+        _set_attr(span, "langfuse.tag.agent", agent_id)
+
+
+def mask_resource_attrs(
+    resource: JsonDict,
+    *,
+    pipeline,
+    content_prefixes: tuple[str, ...],
+    protect=None,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Mask content attributes on the outer resource envelope."""
+    if protect is None:
+        def protect(text: str):  # noqa: ANN001 - closure over identifiers
+            return pipeline.protect(text, trace_id=trace_id, session_id=session_id)
+
+    for attr in resource.get("attributes", []):
+        key = attr.get("key", "")
+        if not key.startswith(tuple(content_prefixes)):
+            continue
+        value = _attr_value(attr)
+        if not isinstance(value, str) or not value:
+            continue
+        result = protect(value)
+        if result.entities:
+            attr["value"] = {"stringValue": result.masked_text}
+
+
+def mask_scope(
+    scope: JsonDict,
+    *,
+    pipeline,
+    content_prefixes: tuple[str, ...],
+    protect=None,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Mask scope-level name/version if they match content prefixes."""
+    if protect is None:
+        def protect(text: str):  # noqa: ANN001 - closure over identifiers
+            return pipeline.protect(text, trace_id=trace_id, session_id=session_id)
+
+    for field in ("name", "version"):
+        value = scope.get(field)
+        if isinstance(value, str) and value and _is_content_key(field, content_prefixes):
+            result = protect(value)
+            if result.entities:
+                scope[field] = result.masked_text
+
+
+def iter_spans(payload: JsonDict) -> Iterable[JsonDict]:
+    """Yield every span in an OTLP/JSON export payload."""
+    for resource_spans in payload.get("resourceSpans", []):
+        for scope_spans in resource_spans.get("scopeSpans", []):
+            yield from scope_spans.get("spans", [])
+
+
+def process_otlp_payload(
+    payload: JsonDict,
+    *,
+    pipeline,
+    content_prefixes: tuple[str, ...],
+    session_attrs: tuple[str, ...],
+    user_attrs: tuple[str, ...],
+    agent_attrs: tuple[str, ...],
+    on_batch_masked: Callable[[int], None] | None = None,
+) -> JsonDict:
+    """Mask every span of the payload in place; returns the same payload.
+
+    Also applies masking to resource-level and scope-level attributes so
+    that content-bearing fields at every level of the OTLP tree are scanned
+    before the payload is forwarded.
+
+    All entities found in the payload are persisted through ONE
+    ``protect_batch``: if any step raises, nothing is written, so a dropped
+    (fail-closed) batch never leaves orphan ciphertext rows behind.
+    """
+    first_span = next(iter_spans(payload), {})
+    trace_id = _hex_trace_id(first_span.get("traceId"))
+    session_id = _first_attr(first_span, session_attrs) if first_span else None
+
+    with pipeline.batch(trace_id=trace_id, session_id=session_id) as batch:
+        for resource_spans in payload.get("resourceSpans", []):
+            resource = resource_spans.get("resource")
+            if isinstance(resource, dict):
+                mask_resource_attrs(
+                    resource,
+                    pipeline=pipeline,
+                    content_prefixes=content_prefixes,
+                    protect=batch.protect,
+                )
+            for scope_spans in resource_spans.get("scopeSpans", []):
+                scope = scope_spans.get("scope")
+                if isinstance(scope, dict):
+                    mask_scope(
+                        scope,
+                        pipeline=pipeline,
+                        content_prefixes=content_prefixes,
+                        protect=batch.protect,
+                    )
+                for span in scope_spans.get("spans", []):
+                    mask_span(
+                        span,
+                        pipeline=pipeline,
+                        content_prefixes=content_prefixes,
+                        session_attrs=session_attrs,
+                        user_attrs=user_attrs,
+                        agent_attrs=agent_attrs,
+                        protect=batch.protect,
+                    )
+
+    span_count = sum(1 for _ in iter_spans(payload))
+    if on_batch_masked is not None:
+        on_batch_masked(span_count)
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Trace id normalisation
+# ---------------------------------------------------------------------------
+
+
 def _hex_trace_id(raw) -> str | None:
     """Normalise an OTLP trace id to the 32-char lowercase hex form.
 
@@ -108,81 +387,6 @@ def _hex_trace_id(raw) -> str | None:
     if len(decoded) in (16, 8):
         return decoded.hex()
     return None
-
-
-def mask_span(
-    span: JsonDict,
-    *,
-    pipeline,  # MaskingPipeline
-    content_prefixes: tuple[str, ...],
-    session_attrs: tuple[str, ...],
-    user_attrs: tuple[str, ...],
-    agent_attrs: tuple[str, ...],
-) -> None:
-    """Mask content attributes of one span in place and stamp identifiers.
-
-    Raises on pipeline failure — the caller treats any exception as
-    fail-closed and drops the whole batch.
-    """
-    trace_id = _hex_trace_id(span.get("traceId")) or span.get("traceId")
-    session_id = _first_attr(span, session_attrs)
-    user_id = _first_attr(span, user_attrs)
-    agent_id = _first_attr(span, agent_attrs)
-
-    for attr in span.get("attributes", []):
-        key = attr.get("key", "")
-        if not key.startswith(tuple(content_prefixes)):
-            continue
-        value = _attr_value(attr)
-        if not isinstance(value, str) or not value:
-            continue
-        result = pipeline.protect(value, trace_id=trace_id, session_id=session_id)
-        if result.entities:
-            attr["value"] = {"stringValue": result.masked_text}
-
-    # identifier mapping for Langfuse (session/user first-class, agent as tag)
-    if session_id:
-        _set_attr(span, "langfuse.session.id", session_id)
-    if user_id:
-        _set_attr(span, "langfuse.user.id", user_id)
-    if agent_id:
-        _set_attr(span, "langfuse.tag.agent", agent_id)
-
-
-def iter_spans(payload: JsonDict) -> Iterable[JsonDict]:
-    """Yield every span in an OTLP/JSON export payload."""
-    for resource_spans in payload.get("resourceSpans", []):
-        for scope_spans in resource_spans.get("scopeSpans", []):
-            yield from scope_spans.get("spans", [])
-
-
-def process_otlp_payload(
-    payload: JsonDict,
-    *,
-    pipeline,
-    content_prefixes: tuple[str, ...],
-    session_attrs: tuple[str, ...],
-    user_attrs: tuple[str, ...],
-    agent_attrs: tuple[str, ...],
-    on_batch_masked: Callable[[int], None] | None = None,
-) -> JsonDict:
-    """Mask every span of the payload in place; returns the same payload.
-
-    Any exception propagates to the caller for fail-closed batch dropping.
-    """
-    spans = list(iter_spans(payload))
-    for span in spans:
-        mask_span(
-            span,
-            pipeline=pipeline,
-            content_prefixes=content_prefixes,
-            session_attrs=session_attrs,
-            user_attrs=user_attrs,
-            agent_attrs=agent_attrs,
-        )
-    if on_batch_masked is not None:
-        on_batch_masked(len(spans))
-    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -113,11 +113,35 @@ def build_trace_store(settings: Settings):
     return LocalTraceStore()
 
 
+def build_archive_store(settings: Settings):
+    """Dedicated Object-Lock bucket for the audit-log archive.
+
+    The archive must NOT live in the media bucket: Object Lock is configured
+    per bucket, so ``agent-media/audit-archive/...`` was never protected by
+    the write-once policy. This returns a store bound to
+    ``AUDIT_ARCHIVE_BUCKET`` (or a separate directory in local mode).
+    """
+    bucket = getattr(settings, "archive_bucket", "audit-archive")
+    if settings.object_store == "s3":
+        from openagent_audit.media.objectstore import S3ObjectStore
+
+        return S3ObjectStore(
+            bucket,
+            endpoint_url=settings.s3_endpoint or None,
+            access_key=settings.s3_access_key or None,
+            secret_key=settings.s3_secret_key or None,
+            region=settings.aws_region or None,
+        )
+    from openagent_audit.media.objectstore import LocalObjectStore
+
+    return LocalObjectStore(f"{settings.object_store_root}/archive")
+
+
 def build_retention_job(settings: Settings):
     """Assemble the retention job from settings (used by the CLI entry point
     ``python -m openagent_audit.services.retention`` — schedule it with cron /
     k8s CronJob under the ``audit_retention`` DB role, see
-    deploy/audit_db_init.sql)."""
+    deploy/10_audit_schema.sql)."""
     from openagent_audit.services.audit_log_service import AuditLogService
     from openagent_audit.services.retention import RetentionJob
 
@@ -126,9 +150,10 @@ def build_retention_job(settings: Settings):
         trace_store=build_trace_store(settings),
         db=db,
         audit=AuditLogService(db, build_loki(settings)),
-        object_store=build_object_store(settings),
+        object_store=build_archive_store(settings),
         trace_retention_days=settings.trace_retention_days,
         audit_archive_after_days=settings.audit_archive_after_days,
+        archive_retention_days=getattr(settings, "archive_retention_days", 3650),
     )
 
 

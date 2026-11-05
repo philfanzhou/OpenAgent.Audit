@@ -44,13 +44,20 @@ services:
 
   minio-init:
     image: minio/mc
-    depends_on: [minio]
+    depends_on:
+      minio: { condition: service_started }
+    # The mc image has no MINIO_ROOT_* variables of its own; they must be
+    # passed in explicitly or the alias is created with empty credentials
+    # (reported as a 127/exit failure during initialisation).
+    environment:
+      MC_HOST_LOCAL: http://${MINIO_ROOT_USER:?}:${MINIO_ROOT_PASSWORD:?}@minio:9000
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD &&
-      mb --ignore-existing local/langfuse-events &&
-      mb --ignore-existing local/agent-media &&
-      mb --ignore-existing --with-lock local/audit-archive &&
+      set -e;
+      until mc alias list local >/dev/null 2>&1; do echo 'waiting for minio'; sleep 1; done;
+      mc mb --ignore-existing local/langfuse-events;
+      mc mb --ignore-existing local/agent-media;
+      mc mb --ignore-existing --with-lock local/audit-archive;
       echo 'buckets ready'"
 
   langfuse-worker:
@@ -91,11 +98,18 @@ services:
     image: postgres:17
     environment:
       POSTGRES_USER: audit_owner
-      POSTGRES_PASSWORD: ${AUDIT_DB_PASSWORD:?}
+      # The owner password is used ONLY to create the schema and roles. It is
+      # deliberately not handed to any application service (see the per-role
+      # passwords below and deploy/init_db.sh).
+      POSTGRES_PASSWORD: ${AUDIT_OWNER_PASSWORD:?}
       POSTGRES_DB: openagent_audit
     volumes:
       - audit-pg:/var/lib/postgresql/data
-      - ./deploy/audit_db_init.sql:/docker-entrypoint-initdb.d/10_init.sql:ro
+      # Schema + role grants live in 10_audit_schema.sql; the wrapper injects
+      # each role's own password via psql variables.
+      - ./deploy/10_audit_schema.sql:/docker-entrypoint-initdb.d/10_audit_schema.sql:ro
+      - ./deploy/init_db.sh:/docker-entrypoint-initdb.d/20_init_db.sh:ro
+      - ./deploy/90_checks.sh:/docker-entrypoint-initdb.d/90_checks.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U audit_owner -d openagent_audit"]
       interval: 5s
@@ -111,7 +125,7 @@ services:
       --host 0.0.0.0 --port 8101
     environment: &audit-env
       AUDIT_ENV: production
-      AUDIT_DB_URL: postgresql://decrypt_svc:${AUDIT_DB_PASSWORD}@audit-db:5432/openagent_audit
+      AUDIT_DB_URL: postgresql://decrypt_svc:${AUDIT_DECRYPT_PASSWORD:?}@audit-db:5432/openagent_audit
       AUDIT_SERVICE_TOKEN: ${AUDIT_SERVICE_TOKEN:?}
       AUDIT_KEY_PROVIDER: ${AUDIT_KEY_PROVIDER:-local}
       AUDIT_PRIVATE_KEY_PATH: /keys/audit_private_key.pem
@@ -125,7 +139,7 @@ services:
       AUDIT_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       AUDIT_TRACE_RETENTION_DAYS: ${AUDIT_TRACE_RETENTION_DAYS:-90}
       AUDIT_ARCHIVE_AFTER_DAYS: ${AUDIT_ARCHIVE_AFTER_DAYS:-30}
-      AUDIT_REVEAL_TTL_MINUTES: ${AUDIT_REVEAL_TTL_MINUTES:-10}
+      AUDIT_REVEAL_TTL_MINUTES: ${AUDIT_REVEAL_TTL_MINUTES:-60}
       AUDIT_PII_BACKEND: ${AUDIT_PII_BACKEND:-rules}
       LOKI_URL: http://loki:3100
     volumes:
@@ -145,7 +159,7 @@ services:
       --factory --host 0.0.0.0 --port 8100
     environment:
       <<: *audit-env
-      AUDIT_DB_URL: postgresql://audit_api:${AUDIT_DB_PASSWORD}@audit-db:5432/openagent_audit
+      AUDIT_DB_URL: postgresql://audit_api:${AUDIT_API_PASSWORD:?}@audit-db:5432/openagent_audit
       AUDIT_DECRYPT_SVC_URL: http://decrypt-svc:8101
       AUDIT_USERS: ${AUDIT_USERS:?}
       AUDIT_TRACE_STORE: ${AUDIT_TRACE_STORE:-langfuse}
@@ -165,7 +179,7 @@ services:
       uvicorn openagent_audit.gateway.app:create_app
       --host 0.0.0.0 --port 8102
     environment:
-      AUDIT_DB_URL: postgresql://agent_writer:${AUDIT_DB_PASSWORD}@audit-db:5432/openagent_audit
+      AUDIT_DB_URL: postgresql://agent_writer:${AUDIT_AGENT_WRITER_PASSWORD:?}@audit-db:5432/openagent_audit
       AUDIT_PUBLIC_KEY_PATH: /keys/audit_public_key.pem
       AUDIT_GATEWAY_TOKEN: ${AUDIT_GATEWAY_TOKEN:?}
       # Fail closed on a missing token instead of silently ingesting
@@ -177,11 +191,12 @@ services:
       AUDIT_GATEWAY_SESSION_ATTRS: ${AUDIT_GATEWAY_SESSION_ATTRS:-}
       AUDIT_GATEWAY_USER_ATTRS: ${AUDIT_GATEWAY_USER_ATTRS:-}
       AUDIT_GATEWAY_AGENT_ATTRS: ${AUDIT_GATEWAY_AGENT_ATTRS:-}
+      AUDIT_PII_BACKEND: ${AUDIT_PII_BACKEND:-rules}
       LANGFUSE_HOST: http://langfuse-web:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     volumes:
-      - ./keys:/keys:ro
+      - ./keys/audit_public_key.pem:/keys/audit_public_key.pem:ro
     networks:
       - default
       - openagent

@@ -39,7 +39,7 @@ from openagent_audit.gateway.otlp import (
     iter_spans,
     process_otlp_payload,
 )
-from openagent_audit.pii.engine import RuleBasedEngine
+from openagent_audit.pii.engine import DetectionEngine, RuleBasedEngine, create_engine, PresidioEngine
 from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
 from openagent_audit.tracing.drop_monitor import DropMonitor
 
@@ -127,21 +127,42 @@ def build_gateway_deps(settings: Settings | None = None) -> GatewayDeps:
         _forward_via_httpx(settings, payload)
 
     db = build_db(settings)
+
+    # Respect the configured PII backend (rules / presidio) rather than
+    # hard-coding RuleBasedEngine. A missing or unusable backend fails at
+    # startup so the gateway never silently degrades.
+    engine = _build_detection_engine(settings)
+
     pipeline = MaskingPipeline(
-        engine=RuleBasedEngine(),
+        engine=engine,
         cipher=build_write_cipher(settings),  # gateway only ever seals
         vault_writer=VaultWriter(db),
     )
     return GatewayDeps(settings=settings, pipeline=pipeline, forwarder=forwarder)
 
 
-def _forward_via_httpx(settings: Settings, payload: bytes) -> None:
-    """POST the masked OTLP/JSON payload to Langfuse with bounded retries.
+def _build_detection_engine(settings: Settings) -> DetectionEngine:
+    """Resolve the configured PII backend and fail-fast on misconfiguration.
 
-    Raises ``RuntimeError`` carrying the last transport/HTTP error so the
-    gateway's counters and ``/internal/metrics`` surface an actionable reason
-    instead of a bare "forward failed".
+    ``RuleBasedEngine`` is always available. ``PresidioEngine`` requires the
+    ``presidio-analyzer`` package and a Chinese spaCy model; when
+    ``AUDIT_PII_BACKEND=presidio`` is chosen but the extra is not installed,
+    this function raises immediately rather than silently falling back to the
+    rule engine — a deployment running an unsupported backend is a
+    configuration error and must never degrade without an alert.
     """
+    backend = settings.pii_backend
+    if backend == "rules":
+        return RuleBasedEngine()
+    if backend == "presidio":
+        return PresidioEngine()
+    raise ValueError(
+        f"Unsupported AUDIT_PII_BACKEND={backend!r}. "
+        "Expected 'rules' or 'presidio'."
+    )
+
+
+def _forward_via_httpx(settings: Settings, payload: bytes) -> None:
     import time
 
     import httpx

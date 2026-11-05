@@ -67,33 +67,50 @@ class TestLocalTraceStore:
 
 class TestLangfuseTraceStore:
     def test_list_and_delete_via_mock_api(self):
-        captured: dict = {}
+        captured: dict = {"get_paths": [], "deletes": []}
+        remaining = [
+            {"id": "t-1", "timestamp": "2026-10-20T10:00:00Z"},
+            {"id": "t-2", "timestamp": "2026-10-20T10:01:00Z"},
+        ]
 
         def handler(request: httpx.Request) -> httpx.Response:
-            captured["path"] = request.url.path
-            captured["params"] = dict(request.url.params)
-            captured["auth"] = request.headers.get("Authorization")
             if request.method == "GET":
-                return httpx.Response(200, json={"data": [{"id": "t-1"}, {"id": "t-2"}]})
+                captured["get_paths"].append(request.url.path)
+                captured["params"] = dict(request.url.params)
+                captured["auth"] = request.headers.get("Authorization")
+                # Only page 1 carries rows; page 2 is empty and terminates the
+                # crawl. Modelling pagination matters because the store now
+                # pages until it sees an empty page.
+                page = int(request.url.params.get("page", "1"))
+                data = list(remaining) if page == 1 else []
+                return httpx.Response(200, json={"data": data})
+            captured["deletes"].append(request.url.path)
+            deleted_id = request.url.path.rsplit("/", 1)[-1]
+            remaining[:] = [r for r in remaining if r["id"] != deleted_id]
             return httpx.Response(204)
 
         transport = httpx.MockTransport(handler)
         client = httpx.Client(transport=transport, base_url="https://lf.example", auth=("pk", "sk"))
         store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
 
-        rows = store.list_traces(session_id="s1", user_id="u1")
+        rows = store.list_traces(session_id="s1", user_id="u1", with_observations=False)
         assert [r.trace_id for r in rows] == ["t-1", "t-2"]
-        assert captured["path"] == "/api/public/traces"
+        assert captured["get_paths"][0] == "/api/public/traces"
         assert captured["params"]["sessionId"] == "s1"
         assert captured["params"]["userId"] == "u1"
         assert captured["auth"].startswith("Basic ")
 
         deleted = store.delete_older_than(NOW)
-        assert deleted == ["t-1", "t-2"]
+        assert sorted(deleted) == ["t-1", "t-2"]
+        # paged to exhaustion rather than stopping after the first page
+        assert len(captured["deletes"]) == 2
 
     def test_list_trace_dicts_returns_raw_rows(self):
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"data": [{"id": "t-1", "extra": 1}]})
+            page = int(request.url.params.get("page", "1"))
+            # page 1 holds the row, page 2 is empty and ends the crawl
+            data = [{"id": "t-1", "extra": 1}] if page == 1 else []
+            return httpx.Response(200, json={"data": data})
 
         client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
@@ -107,7 +124,8 @@ class TestLangfuseTraceStore:
         audit_api._trace_dict never meets a raw API dict."""
 
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"data": [{
+            page = int(request.url.params.get("page", "1"))
+            data = [{
                 "id": "t-1",
                 "sessionId": "sess-1",
                 "userId": "usr_1",
@@ -124,7 +142,8 @@ class TestLangfuseTraceStore:
                     "model": "glm-4",
                     "usage": {"input": 10, "output": 5},
                 }],
-            }]})
+            }] if page == 1 else []
+            return httpx.Response(200, json={"data": data})
 
         client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
@@ -133,7 +152,7 @@ class TestLangfuseTraceStore:
 
         from openagent_audit.services.audit_api import _trace_dict
 
-        payload = _trace_dict(store.list_traces(session_id="sess-1")[0])
+        payload = _trace_dict(store.list_traces(session_id="sess-1", with_observations=True)[0])
         assert payload["trace_id"] == "t-1"
         assert payload["session_id"] == "sess-1"
         assert payload["user_id"] == "usr_1"
@@ -196,7 +215,10 @@ class TestLangfuseTraceStore:
         )
         store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
         rows = store.list_sessions()
-        assert pages_seen == [1, 2]
+        # pages 1-2 carry data; page 3 is the empty page that proves the end
+        # (terminating on a "short page" would stop early when a server caps
+        # page size below the requested limit).
+        assert pages_seen == [1, 2, 3]
         assert len(rows) == 102  # 100 bulk + s1 + s2
         by_id = {r["session_id"]: r for r in rows}
         assert by_id["s1"]["trace_count"] == 2
