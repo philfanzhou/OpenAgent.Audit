@@ -8,6 +8,7 @@ runs (and is fully tested) without a live Langfuse.
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,8 +35,81 @@ class TraceRecord:
     user_id: str
     agent_tag: str
     name: str
-    timestamp: datetime
+    timestamp: datetime | None
     observations: tuple[ObservationRecord, ...] = ()
+
+
+def _parse_timestamp(raw) -> datetime | None:
+    if isinstance(raw, datetime):
+        return raw
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _stringify_io(value, depth: int = 0):
+    """Flatten a Langfuse ``input``/``output`` value into something a Jinja
+    template can render, without ever inventing text that was not stored.
+
+    Langfuse returns the observed input/output as JSON objects; the audit-web
+    templates (and the JSON API) expect a scalar. Objects are re-serialised as
+    pretty JSON, base64 media placeholders are kept verbatim, and deeply
+    nested structures are truncated rather than blowing up the page.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if depth >= 8:
+        return "…"
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def normalize_langfuse_trace(row: dict) -> TraceRecord:
+    """Map one Langfuse public-API trace row onto :class:`TraceRecord`.
+
+    Langfuse field names (``id``/``sessionId``/``userId``/``tags``) differ from
+    the audit-domain ones, and ids may arrive base64-encoded depending on the
+    API version. Normalising here keeps every caller — audit-api, the web UI,
+    retention — on one shape.
+    """
+    tags = row.get("tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    tags = [t for t in tags if isinstance(t, str)]
+    agent_tag = next((t for t in tags if t.startswith("agent:")), tags[0] if tags else "")
+
+    observations: list[ObservationRecord] = []
+    for obs in row.get("observations") or []:
+        if not isinstance(obs, dict):
+            continue
+        observations.append(
+            ObservationRecord(
+                id=str(obs.get("id") or ""),
+                type=str(obs.get("type") or "span"),
+                name=str(obs.get("name") or ""),
+                input=_stringify_io(obs.get("input")),
+                output=_stringify_io(obs.get("output")),
+                metadata=obs.get("metadata") if isinstance(obs.get("metadata"), dict) else {},
+                model=obs.get("model"),
+                usage=obs.get("usage") if isinstance(obs.get("usage"), dict) else {},
+                latency_ms=obs.get("latency") if isinstance(obs.get("latency"), (int, float)) else None,
+            )
+        )
+
+    return TraceRecord(
+        trace_id=str(row.get("traceId") or row.get("id") or ""),
+        session_id=str(row.get("sessionId") or ""),
+        user_id=str(row.get("userId") or ""),
+        agent_tag=agent_tag,
+        name=str(row.get("name") or ""),
+        timestamp=_parse_timestamp(row.get("timestamp")),
+        observations=tuple(observations),
+    )
 
 
 class TraceStore(Protocol):
@@ -130,6 +204,11 @@ class LangfuseTraceStore:
     Audit-side reads never touch raw prompt storage beyond what Langfuse
     already exposes — and thanks to the export hook, that data only ever
     contained ``⟦TYPE#id|mask⟧`` placeholders in the first place.
+
+    ``list_traces`` returns :class:`TraceRecord` objects (never the raw API
+    dicts) so audit-api renders identically regardless of which store backs
+    it; the raw Langfuse rows stay available through ``list_trace_dicts`` for
+    callers that need fields the normalised record drops.
     """
 
     def __init__(self, base_url: str, public_key: str, secret_key: str, client=None) -> None:
@@ -144,7 +223,7 @@ class LangfuseTraceStore:
                 timeout=15.0,
             )
 
-    def list_traces(
+    def list_trace_dicts(
         self,
         session_id: str | None = None,
         user_id: str | None = None,
@@ -168,6 +247,22 @@ class LangfuseTraceStore:
         resp = self._client.get("/api/public/traces", params=params)
         resp.raise_for_status()
         return resp.json().get("data", [])
+
+    def list_traces(
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+    ) -> list[TraceRecord]:
+        rows = self.list_trace_dicts(
+            session_id=session_id, user_id=user_id, from_ts=from_ts, to_ts=to_ts
+        )
+        records = [normalize_langfuse_trace(row) for row in rows]
+        return sorted(
+            (r for r in records if r.timestamp is not None),
+            key=lambda r: r.timestamp,
+        ) or records
 
     def list_sessions(self, from_ts: datetime | None = None, to_ts: datetime | None = None) -> list[dict]:
         """Aggregate sessions from the Langfuse traces API (paged). Mirrors

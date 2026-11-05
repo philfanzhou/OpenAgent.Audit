@@ -82,7 +82,7 @@ class TestLangfuseTraceStore:
         store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
 
         rows = store.list_traces(session_id="s1", user_id="u1")
-        assert [r["id"] for r in rows] == ["t-1", "t-2"]
+        assert [r.trace_id for r in rows] == ["t-1", "t-2"]
         assert captured["path"] == "/api/public/traces"
         assert captured["params"]["sessionId"] == "s1"
         assert captured["params"]["userId"] == "u1"
@@ -90,6 +90,68 @@ class TestLangfuseTraceStore:
 
         deleted = store.delete_older_than(NOW)
         assert deleted == ["t-1", "t-2"]
+
+    def test_list_trace_dicts_returns_raw_rows(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": [{"id": "t-1", "extra": 1}]})
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
+        )
+        store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
+        assert store.list_trace_dicts() == [{"id": "t-1", "extra": 1}]
+
+    def test_session_detail_renders_through_audit_api(self):
+        """Production mode (AUDIT_TRACE_STORE=langfuse) must serve the session
+        detail page: Langfuse rows are normalised into TraceRecord, so
+        audit_api._trace_dict never meets a raw API dict."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": [{
+                "id": "t-1",
+                "sessionId": "sess-1",
+                "userId": "usr_1",
+                "name": "POST /api/v1/agent/chat",
+                "timestamp": "2026-10-20T10:00:00Z",
+                "tags": ["agent:cs-bot"],
+                "observations": [{
+                    "id": "obs-1",
+                    "type": "GENERATION",
+                    "name": "chat",
+                    "input": {"messages": [{"role": "user",
+                                            "content": "电话 ⟦PHONE_NUMBER#ab|138****5678⟧"}]},
+                    "output": {"choices": [{"message": {"content": "好的"}}]},
+                    "model": "glm-4",
+                    "usage": {"input": 10, "output": 5},
+                }],
+            }]})
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
+        )
+        store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
+
+        from openagent_audit.services.audit_api import _trace_dict
+
+        payload = _trace_dict(store.list_traces(session_id="sess-1")[0])
+        assert payload["trace_id"] == "t-1"
+        assert payload["session_id"] == "sess-1"
+        assert payload["user_id"] == "usr_1"
+        assert payload["agent_tag"] == "agent:cs-bot"
+        assert payload["timestamp"].startswith("2026-10-20T10:00:00")
+        (obs,) = payload["observations"]
+        assert obs["id"] == "obs-1" and obs["model"] == "glm-4"
+        # structured input/output are flattened to renderable text, masks intact
+        assert "⟦PHONE_NUMBER#ab|138****5678⟧" in obs["input"]
+        assert "好的" in obs["output"]
+        assert isinstance(obs["input"], str)
+
+    def test_missing_fields_normalise_to_empty_strings(self):
+        from openagent_audit.tracing.trace_store import normalize_langfuse_trace
+
+        record = normalize_langfuse_trace({})
+        assert record.trace_id == "" and record.session_id == ""
+        assert record.timestamp is None and record.observations == ()
 
     def test_time_range_params_forwarded(self):
         captured: dict = {}

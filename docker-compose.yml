@@ -168,15 +168,40 @@ services:
       AUDIT_DB_URL: postgresql://agent_writer:${AUDIT_DB_PASSWORD}@audit-db:5432/openagent_audit
       AUDIT_PUBLIC_KEY_PATH: /keys/audit_public_key.pem
       AUDIT_GATEWAY_TOKEN: ${AUDIT_GATEWAY_TOKEN:?}
+      # Fail closed on a missing token instead of silently ingesting
+      # unauthenticated plaintext.
+      AUDIT_GATEWAY_REQUIRE_AUTH: "true"
       AUDIT_GATEWAY_CONTENT_PREFIXES: ${AUDIT_GATEWAY_CONTENT_PREFIXES:-}
+      # OpenAgent maps its user/agent/conversation ids onto these keys
+      # (docs/openagent-integration.md §2.0); the defaults already cover them.
+      AUDIT_GATEWAY_SESSION_ATTRS: ${AUDIT_GATEWAY_SESSION_ATTRS:-}
+      AUDIT_GATEWAY_USER_ATTRS: ${AUDIT_GATEWAY_USER_ATTRS:-}
+      AUDIT_GATEWAY_AGENT_ATTRS: ${AUDIT_GATEWAY_AGENT_ATTRS:-}
       LANGFUSE_HOST: http://langfuse-web:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     volumes:
       - ./keys:/keys:ro
+    networks:
+      - default
+      - openagent
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8102/healthz')\""]
+      interval: 10s
+      timeout: 3s
+      retries: 6
     # Non-Python agents (OpenAgent .NET) point OTEL_EXPORTER_OTLP_ENDPOINT at
-    # this service: it masks/seals with the same pipeline as the Python path,
-    # then forwards masked OTLP/JSON to Langfuse (fail-closed).
+    # this service and send the token via OTEL_EXPORTER_OTLP_HEADERS. The
+    # gateway accepts http/json, http/protobuf and grpc-framed exports on
+    # /v1/traces (plus /v1/traces/v1/traces and the gRPC service path), masks
+    # and seals with the same pipeline as the Python path, then forwards
+    # masked OTLP/JSON to Langfuse (fail-closed).
+    #
+    # It joins the OpenAgent application network so Engine can reach it by
+    # service name without publishing anything else from this stack. Set
+    # OPENAGENT_APP_NETWORK if the platform's network is named differently
+    # (deploy/deployment.env.example: OPENAGENT_APP_NETWORK, default
+    # "openagent").
 
   # ---- Service logs + alerting copies ---------------------------------------
   loki:
@@ -191,8 +216,24 @@ services:
     depends_on: [loki]
     volumes:
       - ./deploy/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
-      - /var/log/openagent:/var/log/openagent:ro
+      # OpenAgent services log to container stdout (Serilog console sink), so
+      # promtail discovers containers through the Docker API rather than
+      # tailing files that never exist. Read-only socket access is required;
+      # if that is unacceptable in your environment, switch the OpenAgent
+      # compose to the Loki logging driver and remove this service.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     command: -config.file=/etc/promtail/config.yml
+
+networks:
+  default:
+    name: ${AUDIT_COMPOSE_NETWORK:-openagent-audit}
+  openagent:
+    # The OpenAgent application network, created by
+    # deploy/openagent/docker-compose.yml. Declared external so only the
+    # masking gateway joins it — audit-db, Langfuse and decrypt-svc stay on
+    # the audit network and are never reachable from the platform.
+    external: true
+    name: ${OPENAGENT_APP_NETWORK:-openagent}
 
 volumes:
   langfuse-pg:

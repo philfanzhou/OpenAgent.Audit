@@ -1,7 +1,28 @@
-# Scrapes service JSON logs; every line must carry trace_id/session_id as
-# JSON fields (never as labels — proposal §02 通路③ cardinality warning).
+# Promtail configuration for the OpenAgent service logs that reach Loki as
+# the alerting copy only (proposal §02 通路③ / §05).
+#
+# Reality check that this file reflects: the OpenAgent .NET services
+# (Engine/Router/Runner) log through Serilog to **container stdout**, not to
+# files inside the host. There is no /var/log/openagent/*.log to tail, so a
+# file-based scrape silently collects nothing. Two supported sources:
+#
+#   1. docker_sd_configs (default here) — discovers every container on the
+#      host's Docker socket and reads its stdout/stderr stream. Works for the
+#      OpenAgent app stack (openagent-engine / -router / -runner) and for the
+#      audit stack without any host-side logging driver change.
+#   2. Loki's Docker logging driver (`docker run --log-driver loki` /
+#      `logging: driver: loki` in the OpenAgent compose) — then drop this file
+#      and let the driver push directly; honours all the same labels below.
+#
+# Fields vs labels: the Serilog events carry high-cardinality context
+# (TraceId, ConversationId, AgentId, UserId, TenantId) plus the stable
+# ServiceName/ServiceVersion/InstanceId properties. Only the *low-cardinality*
+# service identity becomes a Loki label; the rest is parsed out and stays in
+# the JSON line, which is what keeps the index from blowing up
+# (docs/decisions/0002-Logging-Label-Design.md on the OpenAgent side).
 server:
   http_listen_port: 9080
+  grpc_listen_port: 0
 
 positions:
   filename: /tmp/promtail-positions.yaml
@@ -10,16 +31,78 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  - job_name: openagent-services
-    static_configs:
-      - targets: [localhost]
-        labels:
-          job: openagent-services
-          __path__: /var/log/openagent/*.log
+  - job_name: openagent-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      # OpenAgent services set ServiceName on every Serilog event
+      # (agent-engine / agent-router / open-agent-runner). Select on the
+      # container name so the scrape does not pick up infrastructure noise.
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/?(openagent(-[a-z0-9]+)?|agent-(engine|router|runner))"
+        action: keep
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/+"
+        replacement: ""
+        target_label: container
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: compose_service
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: stream
     pipeline_stages:
+      # Serilog's console sink writes the rendered message with structured
+      # properties inlined by the output template; the JSON event itself is
+      # only emitted when the JSON formatter is configured. Parse defensively
+      # so a plain-text line never drops the log entry.
       - json:
           expressions:
-            trace_id: trace_id
-            session_id: session_id
+            service_name: ServiceName
+            service_version: ServiceVersion
+            instance_id: InstanceId
+            level: "@l"
+            trace_id: TraceId
+            conversation_id: ConversationId
+            agent_id: AgentId
+            user_id: UserId
+            tenant_id: TenantId
+            event_id: "@i"
+      - template:
+          source: service_name
+          template: "{{ if .service_name }}{{ .service_name }}{{ else }}{{ .compose_service }}{{ end }}"
+      - labels:
+          service_name:
+      - structured_metadata:
+          # High-cardinality correlation ids stay queryable without becoming
+          # index labels; Loki 3.x structured metadata keeps them cheap.
+          trace_id:
+          conversation_id:
+          agent_id:
+          user_id:
+          tenant_id:
+          level:
+          event_id:
+      - timestamp:
+          source: "@t"
+          format: RFC3339Nano
+          action_on_failure: skip
       - output:
+          # drop the extracted copies from the label set; the line is untouched
           source: ""
+
+  # Fallback for deployments that deliberately write container logs to files
+  # (e.g. a bind-mounted /var/log/openagent from a logging sidecar). Enable by
+  # uncommenting; it only ever reads files that actually exist.
+  # - job_name: openagent-files
+  #   static_configs:
+  #     - targets: [localhost]
+  #       labels:
+  #         __path__: /var/log/openagent/*.log
+  #   pipeline_stages:
+  #     - json:
+  #         expressions:
+  #           trace_id: TraceId
+  #           conversation_id: ConversationId
+  #     - labels:
+  #         trace_id:
+  #         conversation_id:

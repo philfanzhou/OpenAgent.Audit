@@ -110,41 +110,81 @@ AUDIT_AUTH_CACHE_SECONDS=60
 
 OpenAgent 后端是 .NET 8（Router → Engine.Host → Core），无法内嵌 Langfuse
 Python SDK。audit 平台为此提供 **Masking Gateway**（OTLP 脱敏网关）：
-OpenAgent 侧**只需改一个 OTLP 导出地址**，业务代码零改动。
+OpenAgent 侧指向网关，业务代码零改动。
 
 ```text
-OpenAgent (OTEL_EXPORTER_OTLP_ENDPOINT=http://masking-gateway:8102)
-   │  OTLP/HTTP JSON（.NET 标准导出，协议不变）
+OpenAgent (OTEL_EXPORTER_OTLP_ENDPOINT=http://masking-gateway:8102
+           OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <AUDIT_GATEWAY_TOKEN>")
+   │  OTLP（http/protobuf 默认、http/json、或 gRPC 帧）
    ▼
 Masking Gateway（audit 平台组件，同集群部署）
-   ① 解析 OTLP spans → 对内容属性跑与 Python 路径完全相同的 PII 管线
-      （识别 → ⟦TYPE#随机编号|掩码⟧ + AES-256-GCM 信封加密 → 密文写密文表）
+   ① 解析 OTLP 三种传输形态 → 对内容属性跑与 Python 路径完全相同的 PII 管线
+      （识别 → ⟦TYPE#编号|掩码⟧ + AES-256-GCM 信封加密 → 密文写密文表）
    ② 从 span 属性映射标识符：conversation_id→langfuse.session.id、
       user_id→langfuse.user.id、agent_id→langfuse.tag.agent
-   ③ 掩码后的 span 转发 Langfuse 原生 OTLP 端点（/api/public/otel/v1/traces）
+   ③ 统一重编码为 OTLP/JSON 转发 Langfuse 原生端点（/api/public/otel/v1/traces）
    ④ fail-closed：脱敏/密文入库失败 → 整批丢弃、绝不转发、计数告警
 ```
+
+**网关接受的传输形态**（不必先把 OpenAgent 侧改成 JSON）：
+
+| OpenAgent exporter 设置 | 落到网关的路由 | 说明 |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`（**ASP.NET Core 默认**） | `POST /v1/traces` | 用 `opentelemetry-proto` 解码；镜像已装 `[otlp]` extra |
+| `OTEL_EXPORTER_OTLP_PROTOCOL=http/json` | `POST /v1/traces` | 原生处理 |
+| endpoint 写成 `...:8102/v1/traces` | `POST /v1/traces/v1/traces` | 兼容 SDK 自动追加信号路径 |
+| `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` | `POST /opentelemetry.proto.collector.trace.v1.TraceService/Export` | 解 5 字节帧头；压缩帧拒绝 |
 
 网关侧配置（docker-compose 已内置 `masking-gateway` 服务）：
 
 | 变量 | 说明 |
 |---|---|
-| `AUDIT_GATEWAY_TOKEN` | OpenAgent → 网关的 Bearer 令牌（必填） |
+| `AUDIT_GATEWAY_TOKEN` | OpenAgent → 网关的令牌（必填）；compose 设 `AUDIT_GATEWAY_REQUIRE_AUTH=true`，留空时网关拒绝全部请求而不是静默放行 |
 | `AUDIT_GATEWAY_CONTENT_PREFIXES` | 需要脱敏的 span 属性键前缀（逗号分隔，默认覆盖 gen_ai.*/llm.*/content 等） |
 | `AUDIT_GATEWAY_SESSION_ATTRS` / `_USER_ATTRS` / `_AGENT_ATTRS` | 标识符属性候选键（默认已覆盖 openagent.conversation_id / user_id / agent.id） |
+| `OPENAGENT_APP_NETWORK` | 网关加入的 OpenAgent 应用网络名（默认 `openagent`），须等于平台的 `OPENAGENT_APP_NETWORK` |
 
-OpenAgent 侧配置：
+令牌两种写法都接受：`Authorization: Bearer <token>`（推荐）或
+`x-api-key: <token>`；比较使用常量时间，避免时序侧信道。
 
-```json
-{ "OpenTelemetry": { "OtlpEndpoint": "http://masking-gateway:8102" } }
+OpenAgent 侧配置（环境变量，或 `appsettings.json` 的 `OpenTelemetry:OtlpEndpoint`）：
+
+```bash
+OPENAGENT_OTLP_ENDPOINT=http://masking-gateway:8102
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <AUDIT_GATEWAY_TOKEN>
 ```
 
 信任边界说明：明文 span 会经网络到达网关（同集群、同信任域，与明文进入
-Langfuse worker 的假设等价），网关内存处理不落盘、Bearer 认证、fail-closed。
-这是对技术方案"进程内脱敏"的一处明示偏差，仅适用于非 Python Agent。
+Langfuse worker 的假设等价），网关内存处理不落盘、令牌认证、fail-closed。
+这是对技术方案“进程内脱敏”的一处明示偏差，仅适用于非 Python Agent。
+
+**网络拓扑**：网关同时挂在 audit 网络与 OpenAgent 应用网络上，平台侧用服务名
+`masking-gateway:8102` 直连；audit-db、Langfuse、decrypt-svc 仍只在 audit
+网络内，对平台不可见。
 
 **Python Agent 仍走原路径**（Langfuse Python SDK + mask_otel_spans 进程内
 脱敏）；两条路径共享同一套 PII 管线与密文表，掩码结果完全一致。
+
+#### 2.0.1 OpenAgent 侧仍需配合的三处改动
+
+网关只解决“传输与脱敏”，以下三点必须由 OpenAgent 仓库补齐，否则审计视图不可用：
+
+1. **给 span 带会话/用户标识**。网关只从 span 属性读取
+   `openagent.conversation_id` / `openagent.user_id` / `agent.id`。
+   OpenAgent 现在只打了 `openagent.route` 与 `openagent.agent.id`；且
+   conversation id 在端点内才生成（middleware 早于它），应改用子 span 或
+   执行作用域补打。缺这一项时 `langfuse.session.id` 为空 → 会话视图无法聚合，
+   密文行也无法按保留期关联删除。
+2. **只把 traces 发往网关**。OpenAgent 的 OTLP 配置是全局一个地址，
+   traces/logs/metrics 会一起发过来；日志属 Loki 通道，不应进入审计网关，
+   需支持按信号分开配置（或在 Collector 侧分流）。
+3. **内省端点与审计角色**（见 1.2 / 1.3），平台目前尚未实现。
+
+#### 2.0.2 trace_id 形态
+
+OTLP/JSON 里 trace id 是 base64，Protobuf 里是原始字节。网关在写密文表前统一
+归一为 **32 位小写 hex**——这正是保留期任务按 `trace_id` 匹配删除时使用的形态，
+也与 OpenAgent 日志里的 `X-Trace-Id`/`traceparent` 一致，便于双方对账。
 
 ### 2.1 前置条件
 
