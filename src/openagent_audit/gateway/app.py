@@ -41,6 +41,7 @@ from openagent_audit.gateway.otlp import (
 )
 from openagent_audit.pii.engine import DetectionEngine, RuleBasedEngine, create_engine, PresidioEngine
 from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
+from openagent_audit.tls import httpx_tls_kwargs
 from openagent_audit.tracing.drop_monitor import DropMonitor
 
 
@@ -168,10 +169,11 @@ def _forward_via_httpx(settings: Settings, payload: bytes) -> None:
     import httpx
 
     url = settings.langfuse_host.rstrip("/") + "/api/public/otel/v1/traces"
+    tls = httpx_tls_kwargs(settings)
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=10.0, **tls) as client:
                 resp = client.post(
                     url,
                     content=payload,

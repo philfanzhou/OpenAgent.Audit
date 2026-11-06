@@ -15,7 +15,7 @@ from openagent_audit.services.restore_service import DecryptGateway
 
 
 class HttpDecryptService(DecryptGateway):
-    def __init__(self, base_url: str, service_token: str, client=None, timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str, service_token: str, client=None, timeout: float = 10.0, tls: dict | None = None) -> None:
         self._auth_headers = {"Authorization": f"Bearer {service_token}"}
         if client is not None:
             self._client = client
@@ -26,6 +26,7 @@ class HttpDecryptService(DecryptGateway):
                 base_url=base_url.rstrip("/"),
                 headers=self._auth_headers,
                 timeout=timeout,
+                **(tls or {}),
             )
 
     def decrypt_entity(self, entity_id: str, *, request_id: str, requested_by: str) -> bytes:

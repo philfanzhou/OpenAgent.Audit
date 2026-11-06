@@ -5,6 +5,7 @@ from __future__ import annotations
 from openagent_audit.config import Settings, sqlite_path_from_url
 from openagent_audit.crypto.envelope import RsaEnvelopeCipher
 from openagent_audit.crypto.keys import KeyProvider, KmsKeyProvider, LocalKeyProvider, load_public_key
+from openagent_audit.tls import httpx_tls_kwargs
 
 
 def read_bytes(path: str) -> bytes:
@@ -107,6 +108,7 @@ def build_trace_store(settings: Settings):
             settings.langfuse_host,
             settings.langfuse_public_key,
             settings.langfuse_secret_key,
+            tls=httpx_tls_kwargs(settings),
         )
     from openagent_audit.tracing.trace_store import LocalTraceStore
 
@@ -161,7 +163,7 @@ def build_loki(settings: Settings):
     if settings.loki_url:
         from openagent_audit.alerts.loki import LokiPushClient
 
-        return LokiPushClient(settings.loki_url)
+        return LokiPushClient(settings.loki_url, tls=httpx_tls_kwargs(settings))
     from openagent_audit.alerts.loki import NullLokiClient
 
     return NullLokiClient()

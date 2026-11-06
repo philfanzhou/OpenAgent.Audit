@@ -37,6 +37,7 @@ from openagent_audit.services.auth import (
 )
 from openagent_audit.services.audit_log_service import AuditLogService
 from openagent_audit.services.decrypt_client import HttpDecryptService, InProcessDecryptService
+from openagent_audit.tls import httpx_tls_kwargs, warn_if_verification_disabled
 from openagent_audit.services.restore_service import RestoreError, RestoreService
 from openagent_audit.tracing.drop_monitor import DropMonitor
 from openagent_audit.tracing.trace_store import LangfuseTraceStore, LocalTraceStore
@@ -77,7 +78,9 @@ def build_container(settings: Settings) -> AppContainer:
 
     # decrypt path: separate decrypt-svc when configured, else in-process
     if settings.decrypt_svc_url:
-        decrypt = HttpDecryptService(settings.decrypt_svc_url, settings.service_token)
+        decrypt = HttpDecryptService(
+            settings.decrypt_svc_url, settings.service_token, tls=httpx_tls_kwargs(settings)
+        )
     else:
         key_provider = build_key_provider(settings)
         cipher = build_cipher(settings, key_provider)
@@ -91,6 +94,10 @@ def build_container(settings: Settings) -> AppContainer:
         decrypt,
         reveal_ttl_minutes=settings.reveal_ttl_minutes,
     )
+
+    # Outbound TLS: warn once at startup when a deployment disabled
+    # verification, so the condition is visible in logs and not silent.
+    warn_if_verification_disabled(settings)
 
     # trace reads
     if settings.trace_store == "langfuse":
@@ -142,6 +149,22 @@ def _bearer(request: Request) -> str | None:
     if header.startswith("Bearer "):
         return header[len("Bearer ") :].strip()
     return request.cookies.get(_COOKIE_NAME)
+
+
+def _is_https(request: Request) -> bool:
+    """Whether the browser's connection was HTTPS.
+
+    A TLS-terminating proxy (the usual deployment) leaves
+    ``request.url.scheme`` as http, so ``X-Forwarded-Proto`` is consulted too.
+    Only the first token of a comma-separated header is trusted — the rest may
+    be appended by an untrusted hop.
+    """
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    if forwarded:
+        proto = forwarded.split(",")[0].strip().lower()
+        if proto:
+            return proto == "https"
+    return request.url.scheme == "https"
 
 
 def create_audit_app(container: AppContainer) -> FastAPI:
@@ -485,13 +508,24 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         if principal is None:
             return render(request, "login.html", error="未知令牌", status_code=401)
         resp = RedirectResponse("/ui/sessions", status_code=302)
-        resp.set_cookie(_COOKIE_NAME, token.strip(), httponly=True, samesite="lax")
+        # Mark the session cookie Secure whenever the browser reached us over
+        # HTTPS. Behind a TLS-terminating reverse proxy the ASGI request scheme
+        # is http unless the proxy forwards X-Forwarded-Proto, so both signals
+        # are checked; otherwise the cookie would travel over any plaintext
+        # request to the same host.
+        resp.set_cookie(
+            _COOKIE_NAME,
+            token.strip(),
+            httponly=True,
+            samesite="lax",
+            secure=_is_https(request),
+        )
         return resp
 
     @app.post("/ui/logout")
     def ui_logout(request: Request):
         resp = RedirectResponse("/ui/login", status_code=302)
-        resp.delete_cookie(_COOKIE_NAME)
+        resp.delete_cookie(_COOKIE_NAME, secure=_is_https(request))
         return resp
 
     def ui_principal(request: Request, permission: str) -> Principal:

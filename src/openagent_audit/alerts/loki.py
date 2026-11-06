@@ -12,13 +12,13 @@ import time
 
 
 class LokiPushClient:
-    def __init__(self, url: str, labels: dict[str, str] | None = None, client=None, timeout: float = 5.0) -> None:
+    def __init__(self, url: str, labels: dict[str, str] | None = None, client=None, timeout: float = 5.0, tls: dict | None = None) -> None:
         if client is not None:
             self._client = client
         else:
             import httpx
 
-            self._client = httpx.Client(timeout=timeout)
+            self._client = httpx.Client(timeout=timeout, **(tls or {}))
         self._url = url.rstrip("/")
         self._labels = labels or {}
         self.push_failures = 0
