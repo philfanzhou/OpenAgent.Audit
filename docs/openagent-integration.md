@@ -154,6 +154,18 @@ audit 提供免输入入口，OpenAgent 前端只需在跳转时带上当前用�
 - 建议审计台与 OpenAgent 同属内网、通过 HTTPS 或容器内网访问；
 - 令牌应短期有效并可撤销（audit 侧有 60 秒缓存，撤销最迟约 1 分钟生效）。
 
+**前端已实现**：`OpenAgent-Frontend` 仓库的工作台设置新增了「会话审计」页
+（`src/features/audit/`）。它读取当前标签页 `sessionStorage` 中已有的
+`openagent.auth.access-token`，新开标签页访问上面的 URL 即完成自动登录。
+
+- 审计台地址默认取工作台主机的 `:8100`，可在页面内修改，或用
+  `VITE_OPENAGENT_AUDIT_BASE_URL` 构建预置；
+- 未登录时只提示、不跳转；
+- 该入口只能进入普通视图，管理员登录仍需在审计台内单独完成。
+
+因此部署时 audit 侧只需配好 `AUDIT_AUTH_PROVIDER=http` 与
+`AUDIT_AUTH_INTROSPECT_URL`，无需再改前端代码。
+
 ### 1.4 权限不足时的行为
 
 被拒绝的请求返回 `403`，报文为可读的专业提示（含角色、缺失权限、处理建议），
