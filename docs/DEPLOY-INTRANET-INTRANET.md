@@ -210,7 +210,7 @@ OpenAgent 的 `/me` 支持 JWT、Basic、ApiKey 三种鉴权，audit 把收到�
 
 ```
 AUDIT_TEST_USERNAME=test
-AUDIT_TEST_PASSWORD=test@1233456
+AUDIT_TEST_PASSWORD=test@123456
 AUDIT_TEST_SESSION_MINUTES=60
 ```
 
@@ -243,6 +243,18 @@ UPDATE/DELETE 权限。
 **搜索与分页**：会话列表与审计日志均为每页 10 条、最多 20 页（200 条）。更早的数据
 需用搜索框的条件（时间范围、角色、动作、账号、关键字）定位。日期筛选按
 `AUDIT_DISPLAY_TIMEZONE` 解释。
+
+**关于演示数据**（重要）：
+
+本地演示用的假会话（session id 以 `sess-demo-` 开头）**不会出现在生产环境**，
+有三层保证：
+
+1. 生产默认 `AUDIT_TRACE_STORE=langfuse`，只有 `local` 模式才会生成演示数据；
+2. 即使误开 `AUDIT_DEMO_SEED=1`，Langfuse 模式下也不会播种；
+3. 一旦检测到**任何真实会话**（来自 OpenAgent），演示数据会被**物理删除**，
+   不是隐藏——存储里不再留存，任何页面、归档或后续查询都不可能再看到。
+
+接入 OpenAgent 后，审计台只展示平台传来的用户与会话数据。
 
 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` 先留空，第 2.5 步再填。
 

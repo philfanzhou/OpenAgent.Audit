@@ -46,7 +46,7 @@ a role claim in the token never grants the administrator capability here.
 |---|---|---|
 | **Automatic** | OpenAgent links to `/ui/login?token=<访问令牌>` | Signed in immediately, attributed to that user. This is the normal way in |
 | Manual token | Paste a token into the first form | Same, without the redirect |
-| Test account | Second form: `test` / `test@1233456` | Ordinary user, one-hour session, cannot become admin |
+| Test account | Second form: `test` / `test@123456` | Ordinary user, one-hour session, cannot become admin |
 
 The two forms are deliberately independent: an earlier layout nested the
 test-account fields inside a collapsed `<details>` block beside the token
@@ -62,7 +62,7 @@ forms rather than redirect-looping.
 
 ### The local test account
 
-`test` / `test@1233456` exists so somebody can confirm the console renders when
+`test` / `test@123456` exists so somebody can confirm the console renders when
 OpenAgent is not forwarding an identity. It is deliberately limited:
 
 - **always an ordinary user** — it cannot unlock the administrator role, the
@@ -73,6 +73,24 @@ OpenAgent is not forwarding an identity. It is deliberately limited:
 
 Its credentials are documented here, which is exactly why it must never be
 able to decrypt.
+
+The login page keeps this section **collapsed by default**; it opens
+automatically after a failed attempt so the error and the form are visible
+together.
+
+### Sample data never reaches production
+
+The local demo seeds conversations whose session ids start with `sess-demo-`.
+Three independent guards keep them out of a real deployment:
+
+1. production uses `AUDIT_TRACE_STORE=langfuse`, and samples are only seeded in
+   `local` mode;
+2. even with `AUDIT_DEMO_SEED=1`, Langfuse mode never seeds;
+3. as soon as **one real conversation** arrives, the samples are **deleted**
+   from the store — not merely filtered — so no page, archive or later query
+   can surface them again.
+
+After OpenAgent is connected the console shows platform data only.
 
 ### Administrator password storage
 

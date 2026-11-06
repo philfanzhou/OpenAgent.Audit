@@ -73,7 +73,7 @@ audit 平台只有两种身份，OpenAgent 侧只需要回答"这个人是谁"�
 记录账号、时间、实体编号以及当时登录的会话用户（`session_user`）。若日志写入失败，
 **不返回明文**。日志为 append-only 哈希链，任何应用角色都无 UPDATE/DELETE 权限。
 
-**本地测试兜底账号**：OpenAgent 尚未转发身份时，可用 `test` / `test@1233456` 进入
+**本地测试兜底账号**：OpenAgent 尚未转发身份时，可用 `test` / `test@123456` 进入
 系统，仅用于确认页面正常。它的限制是硬性的：
 
 - 只能是普通用户，**不能**登录管理员（按钮不渲染，直接请求返回 403 并记
@@ -121,7 +121,7 @@ AUDIT_AUTH_CACHE_SECONDS=60
 
 # 本地测试兜底账号：OpenAgent 未传身份时使用，只能是普通用户
 AUDIT_TEST_USERNAME=test
-AUDIT_TEST_PASSWORD=test@1233456
+AUDIT_TEST_PASSWORD=test@123456
 AUDIT_TEST_SESSION_MINUTES=60
 ```
 

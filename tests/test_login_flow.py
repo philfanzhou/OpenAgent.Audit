@@ -38,7 +38,7 @@ def _client(tmp_path, keypair, **overrides):
         admin_username="admin",
         admin_password="admin@123456",
         test_username="test",
-        test_password="test@1233456",
+        test_password="test@123456",
         test_session_minutes=60,
         public_key_path=str(tmp_path / "pub.pem"),
         local_private_key_path=str(tmp_path / "priv.pem"),
@@ -53,15 +53,33 @@ def _client(tmp_path, keypair, **overrides):
 
 class TestLoginPageStructure:
     def test_two_independent_forms(self, api_client):
-        """The token form and the test-account form must be separate."""
+        """Token form and test-account form must be separate, and the test one
+        collapsed by default.
+
+        Collapsing is fine *because* the test account has its own ``<form>``:
+        hiding the section hides the form, it never strips fields from a
+        submission. The earlier bug was a single form whose test fields lived
+        inside a collapsed block.
+        """
         page = api_client.get("/ui/login").text
 
         assert page.count('<form action="/ui/login"') >= 2
-        # The test-account fields must not sit inside a collapsed element.
-        assert "<details" not in page
+        assert 'name="token"' in page
         assert 'name="username"' in page
         assert 'name="password"' in page
-        assert 'name="token"' in page
+
+        # Collapsed on a first visit...
+        assert '<details id="test-login"' in page
+        assert '<details id="test-login" open>' not in page
+
+    def test_test_section_opens_after_a_failed_attempt(self, tmp_path, keypair):
+        """A failed login must reveal the form instead of hiding the error."""
+        client, _ = _client(tmp_path, keypair)
+
+        page = client.post("/ui/login", data={"username": "test", "password": "nope"})
+
+        assert page.status_code == 401
+        assert '<details id="test-login" open>' in page.text
 
     def test_test_username_is_prefilled(self, tmp_path, keypair):
         client, _ = _client(tmp_path, keypair)
@@ -75,7 +93,7 @@ class TestTestAccountLogin:
 
         resp = client.post(
             "/ui/login",
-            data={"token": "", "username": "test", "password": "test@1233456"},
+            data={"token": "", "username": "test", "password": "test@123456"},
             follow_redirects=False,
         )
 
@@ -92,7 +110,7 @@ class TestTestAccountLogin:
 
         resp = client.post(
             "/ui/login",
-            data={"token": "", "username": "test", "password": "test@1233456"},
+            data={"token": "", "username": "test", "password": "test@123456"},
             follow_redirects=False,
         )
 
@@ -119,7 +137,7 @@ class TestTestAccountLogin:
     def test_disabled_test_account_explains_itself(self, tmp_path, keypair):
         client, _ = _client(tmp_path, keypair, test_username="", test_password="")
 
-        page = client.post("/ui/login", data={"username": "test", "password": "test@1233456"})
+        page = client.post("/ui/login", data={"username": "test", "password": "test@123456"})
 
         assert page.status_code == 401
         assert "测试账号未启用" in page.text
