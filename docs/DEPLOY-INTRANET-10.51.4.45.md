@@ -179,11 +179,32 @@ openssl rand -hex 32      # AUDIT_GATEWAY_TOKEN  ← 记下来，第 3 步要用
 
 ```
 AUDIT_AUTH_PROVIDER=http
-AUDIT_AUTH_INTROSPECT_URL=https://agent.monolithicpower.com:444/api/v1/agent/me
+AUDIT_AUTH_INTROSPECT_URL=http://engine:8083/api/v1/agent/me
 ```
 
-> 该地址由 audit-api 容器访问。若走内网直连，用 `http://engine:8083/api/v1/agent/me`
-> 这类容器网络地址更稳妥；外链 HTTPS 且证书不受信时需按第 3.3 步处理 CA。
+> 该地址由 audit-api 容器访问，走 `openagent` 容器网络最稳（无需处理外链 HTTPS 证书）。
+> 若确实要走外链，用 `https://agent.monolithicpower.com:444/api/v1/agent/me`，
+> 并按第 3.3 步处理 CA。
+
+OpenAgent 的 `/me` 支持 JWT、Basic、ApiKey 三种鉴权，audit 把收到的
+`Authorization: Bearer <令牌>` 原样转给它，因此**用户用哪种方式登录 OpenAgent 都能对上**。
+
+**让 OpenAgent 用户自动登录 audit**（推荐）：
+
+由 OpenAgent 前端在跳转审计台时把令牌带在 URL 上：
+
+```
+{审计台地址}/ui/login?token={当前用户的 OpenAgent 访问令牌}
+```
+
+例如 `http://10.51.4.45:8100/ui/login?token=eyJhbGci...`。审计台收到后：
+自动换取会话 Cookie → 302 跳转到会话列表，用户无需输入任何东西，日志记为该用户本人。
+
+- 令牌只用于换取一次会话，**不会渲染进页面**；
+- 令牌无效时**回落到登录页**（带明确提示），不会重定向循环；
+- 自动登录**不会**获得管理员权限，看原文仍需单独输入管理员密码。
+
+> 若 OpenAgent 前端暂时不改，用户直接打开审计台时没有令牌，就用下面的测试账号进入。
 
 **测试账号**（OpenAgent 未传身份时用）：
 

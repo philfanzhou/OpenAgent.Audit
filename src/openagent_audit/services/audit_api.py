@@ -758,8 +758,48 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return RedirectResponse("/ui/sessions", status_code=302)
 
     @app.get("/ui/login", response_class=HTMLResponse)
-    def ui_login(request: Request):
-        return render(request, "login.html", error=None)
+    def ui_login(request: Request, token: str | None = None):
+        """Login page, optionally consuming a platform token from the URL.
+
+        The automatic path: OpenAgent redirects here as
+        ``/ui/login?token=<访问令牌>`` and the browser signs in immediately,
+        with no typing. That is what makes "use my OpenAgent account" work —
+        the platform already knows who the user is, it just has to hand the
+        token over.
+
+        The token is consumed once and never rendered into the page; the
+        browser's history keeps it, so a deployment behind a proxy should also
+        redirect with a fragment-free query. If the token is rejected the page
+        falls back to the manual forms rather than looping.
+        """
+        if token and token.strip():
+            principal = container.identities.resolve(token.strip())
+            if principal is not None:
+                session = container.sessions.create(principal)
+                container.audit.append(
+                    actor=principal.username,
+                    role=principal.role,
+                    action="LOGIN",
+                    object_type="session",
+                    object_id=principal.username,
+                    detail={"via": "url-token", "ephemeral": False},
+                )
+                secure = _cookie_security(request)
+                response = RedirectResponse("/ui/sessions", status_code=302)
+                response.set_cookie(_SESSION_COOKIE, session.token, **secure)
+                response.set_cookie(_IDENTITY_COOKIE, token.strip(), **secure)
+                return response
+
+            # Rejected: show the page with a clear reason instead of a loop.
+            return render(
+                request,
+                "login.html",
+                error="OpenAgent 令牌无效或平台暂时不可达，请重新从平台进入，或使用测试账号。",
+                test_username=settings.test_username,
+                status_code=401,
+            )
+
+        return render(request, "login.html", error=None, test_username=settings.test_username)
 
     @app.post("/ui/login")
     def ui_login_post(
@@ -798,13 +838,29 @@ def create_audit_app(container: AppContainer) -> FastAPI:
                 via = "test-account"
 
         if principal is None:
-            has_credentials = bool(token.strip() or username.strip())
-            message = (
-                "登录凭据无效。请使用 OpenAgent 下发的令牌，或使用测试账号。"
-                if has_credentials
-                else "请输入 OpenAgent 令牌，或测试账号与密码。"
+            # Say what was actually wrong. "Enter something" is unhelpful when
+            # the user did type credentials and only one half was rejected.
+            if username.strip() and not password:
+                message = "请输入测试账号的密码。"
+            elif username.strip() or password:
+                if not settings.test_username or not settings.test_password:
+                    message = (
+                        "测试账号未启用（AUDIT_TEST_USERNAME/AUDIT_TEST_PASSWORD 为空）。"
+                        "请改用 OpenAgent 令牌登录。"
+                    )
+                else:
+                    message = "测试账号或密码不正确。"
+            elif token.strip():
+                message = "OpenAgent 令牌无效，或平台暂时不可达。"
+            else:
+                message = "请输入 OpenAgent 令牌，或测试账号与密码。"
+            return render(
+                request,
+                "login.html",
+                error=message,
+                test_username=settings.test_username,
+                status_code=401,
             )
-            return render(request, "login.html", error=message, status_code=401)
 
         session = container.sessions.create(principal)
         container.audit.append(

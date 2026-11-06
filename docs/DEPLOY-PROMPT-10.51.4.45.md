@@ -210,6 +210,17 @@ AUDIT_AUTH_INTROSPECT_URL=http://engine:8083/api/v1/agent/me
 
 > ⚠️ `.env` 里**不要写行内注释**。`KEY=value  # 说明` 会把注释当成值的一部分。
 
+**OpenAgent 用户自动登录 audit**（推荐，需要 OpenAgent 前端配合一处小改动）：
+
+OpenAgent 前端在跳转审计台时带上当前用户令牌即可，用户无需输入任何东西：
+
+```
+http://10.51.4.45:8100/ui/login?token={当前用户的 OpenAgent 访问令牌}
+```
+
+这一步**不是部署必需**：不接也能用测试账号进审计台。若本次不接，请在最终报告里
+注明"自动登录未对接，当前靠测试账号"，交给后续前端迭代处理。
+
 ### 4.4 启动
 
 ```bash

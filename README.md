@@ -40,6 +40,26 @@ user list.
 Every platform identity becomes `user`, whatever roles the platform reports:
 a role claim in the token never grants the administrator capability here.
 
+### Getting in
+
+| Path | How | Result |
+|---|---|---|
+| **Automatic** | OpenAgent links to `/ui/login?token=<访问令牌>` | Signed in immediately, attributed to that user. This is the normal way in |
+| Manual token | Paste a token into the first form | Same, without the redirect |
+| Test account | Second form: `test` / `test@1233456` | Ordinary user, one-hour session, cannot become admin |
+
+The two forms are deliberately independent: an earlier layout nested the
+test-account fields inside a collapsed `<details>` block beside the token
+field, and a collapsed block can leave its inputs out of the submission — a
+correct test login then arrived empty and the page answered "please enter a
+token or test credentials". They are now separate forms, and errors name the
+actual problem (missing password, wrong password, test account disabled).
+
+To wire the automatic path, have OpenAgent redirect users to
+`{审计台}/ui/login?token={访问令牌}`. The token is exchanged once for a session
+cookie and never rendered into the page. An invalid token falls back to the
+forms rather than redirect-looping.
+
 ### The local test account
 
 `test` / `test@1233456` exists so somebody can confirm the console renders when
