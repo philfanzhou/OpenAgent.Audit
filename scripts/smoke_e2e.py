@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -70,8 +72,9 @@ def main() -> int:
         "AUDIT_PUBLIC_KEY_PATH": str(tmp / "pub.pem"),
         "AUDIT_OBJECT_STORE": "local",
         "AUDIT_OBJECT_STORE_ROOT": str(tmp / "objects"),
-        "AUDIT_USERS": ("smoke-auditor:alice:auditor,smoke-lead:bob:compliance_lead,"
-                        "smoke-lead2:carol:compliance_lead"),
+        "AUDIT_USERS": "smoke-alice:alice:user,smoke-bob:bob:user",
+        "AUDIT_ADMIN_USERNAME": "admin",
+        "AUDIT_ADMIN_PASSWORD": "admin@123456",
     })
 
     decrypt_proc = subprocess.Popen(
@@ -107,31 +110,76 @@ def main() -> int:
         # health + authn
         status, body = http("GET", f"{audit}/healthz")
         assert status == 200 and body["ok"]
-        status, _ = http("GET", f"{audit}/v1/restore-requests")
+        status, _ = http("GET", f"{audit}/v1/sessions")
         assert status == 401
         print("[ok] auth enforced over real HTTP")
 
-        # restore flow across two real processes
-        status, r = http("POST", f"{audit}/v1/restore-requests", token="smoke-lead", payload={
-            "object_type": "entity", "object_id": entity_id, "reason": "smoke test"})
-        assert status == 201, (status, r)
-        request_id = r["id"]
-        status, body = http("POST", f"{audit}/v1/restore-requests/{request_id}/approve",
-                            token="smoke-lead", payload={})
-        assert status == 403 and body["detail"] == "four_eyes", (status, body)
-        status, body = http("POST", f"{audit}/v1/restore-requests/{request_id}/approve",
-                            token="smoke-lead2", payload={})
-        assert status == 200 and body["status"] == "approved", (status, body)
-        status, revealed = http("POST", f"{audit}/v1/restore-requests/{request_id}/reveal",
-                                token="smoke-lead2")
-        assert status == 200 and revealed["plaintext"] == "13812345678", (status, revealed)
+        # A browser session is a cookie; use cookies explicitly here because
+        # the two-step admin login depends on it.
+        from http.cookiejar import CookieJar
+        import urllib.request
+
+        jar = CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+
+        def post_form(url: str, form: dict):
+            data = urllib.parse.urlencode(form).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            try:
+                with opener.open(req, timeout=10) as resp:
+                    return resp.status, resp.read()
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read()
+
+        def get_cookie(url: str):
+            try:
+                with opener.open(urllib.request.Request(url), timeout=10) as resp:
+                    return resp.status, resp.read()
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read()
+
+        # sign in as an ordinary platform user
+        status, _ = post_form(f"{audit}/ui/login", {"token": "smoke-alice"})
+        assert status == 200, status  # follows the redirect to /ui/sessions
+        status, body = get_cookie(f"{audit}/v1/me")
+        assert status == 200, (status, body[:200])
+        principal = json.loads(body)
+        assert principal["role"] == "user" and principal["is_admin"] is False, principal
+        print("[ok] platform user signed in as 'user' over real HTTP")
+
+        # a plain user cannot reveal
+        status, body = post_form(f"{audit}/v1/reveal/{entity_id}", {})
+        assert status == 403, (status, body[:200])
+        print("[ok] plain user refused plaintext (403)")
+
+        # step up to administrator
+        status, _ = post_form(
+            f"{audit}/ui/admin/login", {"username": "admin", "password": "admin@123456"}
+        )
+        assert status == 200, status
+        status, body = get_cookie(f"{audit}/v1/me")
+        assert json.loads(body)["is_admin"] is True, body[:200]
+        print("[ok] administrator step-up over real HTTP")
+
+        # reveal one entity through audit-api -> decrypt-svc
+        status, body = post_form(f"{audit}/v1/reveal/{entity_id}", {})
+        assert status == 200, (status, body[:300])
+        revealed = json.loads(body)
+        assert revealed["plaintext"] == "13812345678", revealed
         print("[ok] audit-api -> decrypt-svc network decrypt path works")
 
-        status, log = http("GET", f"{audit}/v1/audit-log?verify=true", token="smoke-auditor")
-        assert status == 200 and log["verification"]["ok"] is True
+        status, body = get_cookie(f"{audit}/v1/audit-log?verify=true")
+        assert status == 200, (status, body[:200])
+        log = json.loads(body)
+        assert log["verification"]["ok"] is True
         actions = [e["action"] for e in log["entries"]]
-        assert "DECRYPT_PERFORMED" in actions  # logged by the separate process
-        print("[ok] hash chain intact; decrypt logged by decrypt-svc process")
+        for expected in ("LOGIN", "ADMIN_LOGIN", "ENTITY_REVEALED", "DECRYPT_PERFORMED"):
+            assert expected in actions, actions
+        reveal_entry = next(e for e in log["entries"] if e["action"] == "ENTITY_REVEALED")
+        assert reveal_entry["detail"]["session_user"] == "alice", reveal_entry
+        print("[ok] hash chain intact; step-up and reveal both recorded")
+
         print("SMOKE PASS")
         return 0
     finally:

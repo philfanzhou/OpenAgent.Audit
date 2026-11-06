@@ -1,0 +1,17 @@
+{# Shared pager: 10 rows per page, at most 20 pages. #}
+{% if total_pages > 1 %}
+<nav class="pager">
+  {% if page > 1 %}
+    <a class="btn" href="{{ pager_base }}page={{ page - 1 }}{{ pager_query }}">上一页</a>
+  {% endif %}
+  <span class="muted">第 {{ page }} / {{ total_pages }} 页</span>
+  {% if page < total_pages %}
+    <a class="btn" href="{{ pager_base }}page={{ page + 1 }}{{ pager_query }}">下一页</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% if truncated %}
+<div class="notice">
+  仅有最近 {{ max_visible }} 条可直接翻页；更早的数据请使用搜索条件（时间范围或关键字）。
+</div>
+{% endif %}

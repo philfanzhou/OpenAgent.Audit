@@ -2,7 +2,18 @@
 {% block title %}会话 {{ session_id }} · OpenAgent 审计台{% endblock %}
 {% block content %}
 <h1>会话 <code>{{ session_id }}</code></h1>
-<p class="sub">敏感值以「编号 + 掩码」入库；原文还原须经审批并由 decrypt-svc 解密。</p>
+<p class="sub">
+  敏感值以「编号 + 掩码」入库。
+  {% if revealable %}
+    点击带边框的脱敏内容可查看原文，<strong>每次查看都会记录到审计日志</strong>。
+  {% else %}
+    查看原文请先「登录管理员」。
+  {% endif %}
+</p>
+<div class="toolbar">
+  {# Same destination as the header 会话 link: both return to the session list. #}
+  <a class="btn" href="/ui/sessions">← 返回会话列表</a>
+</div>
 {% for t in traces %}
 <div class="card">
   <p style="margin:0 0 4px"><span class="pill b3">trace</span> <code>{{ t.trace_id }}</code>
@@ -17,10 +28,10 @@
       {% if o.latency_ms %}<span class="muted">{{ o.latency_ms }}ms</span>{% endif %}
     </p>
     {% if o.input %}
-      <div class="msg"><pre>{{ o.input|entmark|safe }}</pre></div>
+      <div class="msg"><pre>{{ o.input|entmark(revealable=revealable)|safe }}</pre></div>
     {% endif %}
     {% if o.output %}
-      <div class="msg"><pre>{{ o.output|entmark|safe }}</pre></div>
+      <div class="msg"><pre>{{ o.output|entmark(revealable=revealable)|safe }}</pre></div>
     {% endif %}
   {% endfor %}
 </div>

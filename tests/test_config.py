@@ -8,11 +8,11 @@ from openagent_audit.config import Settings
 
 
 def test_parse_users_roundtrip():
-    s = Settings.from_env({"AUDIT_USERS": "tok1:alice:auditor,tok2:bob:compliance_lead"})
+    s = Settings.from_env({"AUDIT_USERS": "tok1:alice:user,tok2:bob:user"})
     assert len(s.users) == 2
     assert s.user_for_token("tok1").username == "alice"
-    assert s.user_for_token("tok1").role == "auditor"
-    assert s.user_for_token("tok2").role == "compliance_lead"
+    assert s.user_for_token("tok1").role == "user"
+    assert s.user_for_token("tok2").role == "user"
     assert s.user_for_token("nope") is None
 
 

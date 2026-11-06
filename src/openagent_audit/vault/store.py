@@ -211,26 +211,64 @@ class SQLiteAuditDatabase:
         before_seq: int | None = None,
         q: str | None = None,
         offset: int = 0,
+        *,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        role: str | None = None,
+        action: str | None = None,
     ) -> list[AuditEntry]:
+        """Paged audit read.
+
+        ``from_ts``/``to_ts`` filter on the stored UTC timestamp (inclusive
+        start, exclusive end), ``role`` and ``action`` filter on exact values,
+        and ``q`` is a substring search across actor/action/object/role.
+        """
+        where, params = self._audit_filters(
+            q=q, from_ts=from_ts, to_ts=to_ts, role=role, action=action, before_seq=before_seq
+        )
         query = "SELECT * FROM audit_log"
-        params: list[object] = []
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY seq DESC LIMIT ? OFFSET ?"
+        params += [limit, offset]
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._audit_row(r) for r in rows]
+
+    def _audit_filters(
+        self,
+        *,
+        q: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        role: str | None = None,
+        action: str | None = None,
+        before_seq: int | None = None,
+    ) -> tuple[list[str], list[object]]:
         clauses: list[str] = []
+        params: list[object] = []
         if before_seq is not None:
             clauses.append("seq < ?")
             params.append(before_seq)
+        if from_ts is not None:
+            clauses.append("ts >= ?")
+            params.append(_iso(from_ts))
+        if to_ts is not None:
+            clauses.append("ts < ?")
+            params.append(_iso(to_ts))
+        if role:
+            clauses.append("role = ?")
+            params.append(role)
+        if action:
+            clauses.append("action LIKE ?")
+            params.append(f"%{action}%")
         if q:
             clauses.append(
                 "(actor LIKE ? OR action LIKE ? OR object_type LIKE ? OR object_id LIKE ? OR role LIKE ?)"
             )
             like = f"%{q}%"
             params += [like, like, like, like, like]
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY seq DESC LIMIT ? OFFSET ?"
-        params += [limit, offset]
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-        return [self._audit_row(r) for r in rows]
+        return clauses, params
 
     def iter_audit(self) -> list[AuditEntry]:
         with self._connect() as conn:
@@ -257,16 +295,26 @@ class SQLiteAuditDatabase:
             (n,) = conn.execute(query, params).fetchone()
         return int(n)
 
-    def count_audit_entries(self, q: str | None = None) -> int:
+    def count_audit_entries(
+        self,
+        q: str | None = None,
+        *,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        role: str | None = None,
+        action: str | None = None,
+    ) -> int:
+        """Count entries matching the same filters as ``list_audit``.
+
+        The count must use identical filters, otherwise pagination reports a
+        total that does not match the pages it is paging through.
+        """
+        where, params = self._audit_filters(
+            q=q, from_ts=from_ts, to_ts=to_ts, role=role, action=action
+        )
         query = "SELECT COUNT(*) FROM audit_log"
-        params: list[object] = []
-        if q:
-            query += (
-                " WHERE actor LIKE ? OR action LIKE ? OR object_type LIKE ?"
-                " OR object_id LIKE ? OR role LIKE ?"
-            )
-            like = f"%{q}%"
-            params = [like, like, like, like, like]
+        if where:
+            query += " WHERE " + " AND ".join(where)
         with self._connect() as conn:
             (n,) = conn.execute(query, params).fetchone()
         return int(n)

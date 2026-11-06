@@ -31,18 +31,14 @@ def test_decrypt_media_endpoint(cipher, tmp_path):
     db, media, client = _media_world(cipher, tmp_path)
     payload = b"\x89PNG-media-endpoint-bytes"
     ref = media.encrypt_and_upload(payload, "image/png")
-    req = RestoreRequest(id="req-media001", object_type="media", object_id=ref.key,
-                         reason="核查", requested_by="bob", status=RestoreStatus.APPROVED,
-                         approver="carol")
-    db.insert_restore_request(req)
     r = client.post(
         "/v1/decrypt-media",
         headers={"Authorization": "Bearer st"},
-        json={"key": ref.key, "request_id": req.id, "requested_by": "bob"},
+        json={"object_key": ref.key, "actor": "admin", "session_user": "alice"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     assert r.content == payload
-    assert "DECRYPT_PERFORMED" in [e.action for e in db.iter_audit()]
+    assert "MEDIA_DECRYPT_PERFORMED" in [e.action for e in db.iter_audit()]
 
 
 def test_decrypt_media_tamper_rejected(cipher, tmp_path):

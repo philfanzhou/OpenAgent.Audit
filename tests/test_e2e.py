@@ -123,55 +123,48 @@ def test_full_plane(world):
     refs = _ingest(world)
     assert len(refs) == 1
 
-    AUD = {"Authorization": "Bearer tok-auditor"}
-    LEAD = {"Authorization": "Bearer tok-lead"}
-    DEV = {"Authorization": "Bearer tok-dev"}
-    LEAD2 = {"Authorization": "Bearer tok-lead2"}
-
-    # 1. audit browse: masks only — no plaintext, no base64, no ciphertext
-    assert client.get("/v1/sessions", headers=AUD).status_code == 200
-    body = client.get("/v1/sessions/conv-9000", headers=AUD).text
-    assert "13812345678" not in body and "张伟" not in body and "zhangwei@example.com" not in body
+    # 1. an ordinary user browses: masks only, no plaintext, no ciphertext
+    client.post("/ui/login", data={"token": "tok-alice"}, follow_redirects=False)
+    assert client.get("/v1/sessions").status_code == 200
+    body = client.get("/v1/sessions/conv-9000").text
+    assert "13812345678" not in body
+    assert "张伟" not in body
+    assert "zhangwei@example.com" not in body
     assert base64.b64encode(PNG).decode() not in body
-    assert "138****5678" in body and "⟦" in body
+    assert "138****5678" in body
 
-    # 2. text restore: request -> four-eyes approve -> reveal
+    # 2. a plain user has no plaintext path at all
     phone_entity = _find_entity_by_plaintext(world, "13812345678")
-    r = client.post("/v1/restore-requests", headers=LEAD, json={
-        "object_type": "entity", "object_id": phone_entity,
-        "reason": "用户争议核验", "trace_id": "tr-e2e-42", "session_id": "conv-9000"})
-    assert r.status_code == 201
-    request_id = r.json()["id"]
-    assert client.post(f"/v1/restore-requests/{request_id}/approve",
-                       headers=LEAD, json={}).status_code == 403
-    assert client.post(f"/v1/restore-requests/{request_id}/approve",
-                       headers=LEAD2, json={}).status_code == 200
-    revealed = client.post(f"/v1/restore-requests/{request_id}/reveal", headers=LEAD2)
-    assert revealed.status_code == 200
+    assert client.post(f"/v1/reveal/{phone_entity}").status_code == 403
+    assert client.get("/v1/audit-log").status_code == 403
+
+    # 3. the administrator steps up, then a click reveals exactly one value
+    assert client.post(
+        "/ui/admin/login",
+        data={"username": "admin", "password": "admin@123456"},
+        follow_redirects=False,
+    ).status_code == 302
+
+    revealed = client.post(f"/v1/reveal/{phone_entity}")
+    assert revealed.status_code == 200, revealed.text
     assert revealed.json()["plaintext"] == "13812345678"
 
-    # 3. media: same approval flow, then download the decrypted original
-    r = client.post("/v1/restore-requests", headers=LEAD, json={
-        "object_type": "media", "object_id": refs[0].key, "reason": "核查照片"})
-    media_request_id = r.json()["id"]
-    client.post(f"/v1/restore-requests/{media_request_id}/approve", headers=LEAD2, json={})
-    content = client.get(f"/v1/restore-requests/{media_request_id}/content", headers=LEAD2)
-    assert content.content == PNG
-
-    # 4. audit log: hash chain intact, full action trail, Loki copies flowing
-    log = client.get("/v1/audit-log?verify=true", headers=AUD).json()
+    # 4. the audit log records the step-up and the reveal, chain intact
+    log = client.get("/v1/audit-log?verify=true").json()
     assert log["verification"]["ok"] is True
     actions = [e["action"] for e in log["entries"]]
-    for expected in ("RESTORE_REQUESTED", "RESTORE_APPROVED", "RESTORE_DECRYPTED",
-                     "RESTORE_VIEWED", "MEDIA_DECRYPTED", "DECRYPT_PERFORMED"):
+    for expected in ("LOGIN", "ADMIN_LOGIN", "ENTITY_REVEAL_REQUESTED", "ENTITY_REVEALED"):
         assert expected in actions, actions
-    categories = {e["category"] for e in world["loki"].events}
-    assert {"decrypt", "restore"} <= categories
-    for event in world["loki"].events:  # alerting copies never carry values
+
+    reveal_entry = next(e for e in log["entries"] if e["action"] == "ENTITY_REVEALED")
+    assert reveal_entry["detail"]["session_user"] == "alice"
+
+    # alerting copies never carry values
+    for event in world["loki"].events:
         assert "13812345678" not in json.dumps(event, ensure_ascii=False)
 
-    # 5. metrics: no drops anywhere on the write path (developer-only endpoint)
-    metrics = client.get("/internal/metrics", headers=DEV).json()
+    # 5. metrics are administrator-only and show no drops
+    metrics = client.get("/internal/metrics").json()
     assert metrics["drops"]["dropped_batches"] == 0
 
 

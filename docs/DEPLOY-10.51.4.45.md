@@ -334,7 +334,7 @@ external 网络缺失而失败。
 
 ## 6. 部署后仍需人工决策
 
-- `AUDIT_USERS` 里的示例令牌必须换成真实值，且不要把 `compliance_lead` 广发（可解密）
+- `AUDIT_USERS` 里的示例令牌必须换成真实值；普通用户只看到脱敏内容，管理员权限靠密码解锁（见 `DEPLOY-INTRANET-10.51.4.45.md`），**不要**把管理员密码发给普通业务人员
 - 保留期、还原 TTL、掩码深度属合规决策，见 `.env` 的 retention 段落
 - 平台账号登录 audit-web（token 内省）**尚未实现**，当前用 `AUDIT_AUTH_PROVIDER=static`
 - `deploy/alerting/` 的 Prometheus 规则需接入你们现有监控，`batches_dropped > 0` 必须告警

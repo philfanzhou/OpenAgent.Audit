@@ -1,8 +1,8 @@
 from openagent_audit.services.auth import (
     AuthenticationError,
     AuthorizationError,
-    Authenticator,
     Principal,
+    SessionStore,
 )
 
-__all__ = ["AuthenticationError", "Authenticator", "AuthorizationError", "Principal"]
+__all__ = ["AuthenticationError", "AuthorizationError", "Principal", "SessionStore"]
