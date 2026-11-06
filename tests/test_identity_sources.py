@@ -91,14 +91,14 @@ class TestPlatformIdentity:
 
 class TestLocalTestAccount:
     def _settings(self, **overrides) -> Settings:
-        base = dict(test_username="test", test_password="test@1233456")
+        base = dict(test_username="test", test_password="test@123456")
         base.update(overrides)
         return Settings(**base)
 
     def test_valid_credentials_produce_an_ephemeral_user(self):
         resolver = IdentityResolver(self._settings())
 
-        principal = resolver.resolve_test_account("test", "test@1233456")
+        principal = resolver.resolve_test_account("test", "test@123456")
 
         assert principal is not None
         assert principal.username == "test"
@@ -112,18 +112,18 @@ class TestLocalTestAccount:
 
     def test_wrong_username_is_rejected(self):
         resolver = IdentityResolver(self._settings())
-        assert resolver.resolve_test_account("admin", "test@1233456") is None
+        assert resolver.resolve_test_account("admin", "test@123456") is None
 
     def test_disabled_when_not_configured(self):
         resolver = IdentityResolver(Settings())
-        assert resolver.resolve_test_account("test", "test@1233456") is None
+        assert resolver.resolve_test_account("test", "test@123456") is None
 
     def test_refuses_to_shadow_the_admin_account(self):
         """A test account with the admin's name would be a back door."""
         resolver = IdentityResolver(
             self._settings(test_username="admin", admin_username="admin")
         )
-        assert resolver.resolve_test_account("admin", "test@1233456") is None
+        assert resolver.resolve_test_account("admin", "test@123456") is None
 
     def test_cannot_step_up(self):
         assert Principal("test", ROLE_USER, ephemeral=True).can_step_up_to_admin is False
@@ -175,7 +175,7 @@ class TestTestAccountOverHttp:
             **{
                 **container.settings.__dict__,
                 "test_username": "test",
-                "test_password": "test@1233456",
+                "test_password": "test@123456",
             }
         )
 
@@ -184,7 +184,7 @@ class TestTestAccountOverHttp:
 
         resp = api_client.post(
             "/ui/login",
-            data={"username": "test", "password": "test@1233456"},
+            data={"username": "test", "password": "test@123456"},
             follow_redirects=False,
         )
         assert resp.status_code == 302
@@ -197,7 +197,7 @@ class TestTestAccountOverHttp:
         self._enable_test_account(container)
         api_client.post(
             "/ui/login",
-            data={"username": "test", "password": "test@1233456"},
+            data={"username": "test", "password": "test@123456"},
             follow_redirects=False,
         )
 
@@ -210,7 +210,7 @@ class TestTestAccountOverHttp:
         self._enable_test_account(container)
         api_client.post(
             "/ui/login",
-            data={"username": "test", "password": "test@1233456"},
+            data={"username": "test", "password": "test@123456"},
             follow_redirects=False,
         )
 
@@ -237,7 +237,7 @@ class TestTestAccountOverHttp:
         self._enable_test_account(container)
         api_client.post(
             "/ui/login",
-            data={"username": "test", "password": "test@1233456"},
+            data={"username": "test", "password": "test@123456"},
             follow_redirects=False,
         )
         api_client.post(
@@ -253,7 +253,7 @@ class TestTestAccountOverHttp:
         self._enable_test_account(container)
         api_client.post(
             "/ui/login",
-            data={"username": "test", "password": "test@1233456"},
+            data={"username": "test", "password": "test@123456"},
             follow_redirects=False,
         )
         assert api_client.post("/v1/reveal/deadbeefdeadbeef").status_code == 403

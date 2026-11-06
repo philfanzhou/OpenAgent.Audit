@@ -203,7 +203,12 @@ def search_sessions(
       exist and no filter was supplied: the console then asks for a search
       instead of paging through an unbounded list.
     """
-    from openagent_audit.services.demo_seed import is_demo_session
+    from openagent_audit.services.demo_seed import is_demo_session, purge_demo_data
+
+    # Once real conversations exist the seeded samples are removed from the
+    # store, not merely filtered out: after connecting to OpenAgent the console
+    # must show platform data only, with nothing left to mistake for it.
+    purge_demo_data(container.trace_store)
 
     sessions = (
         container.trace_store.list_sessions()
@@ -796,10 +801,17 @@ def create_audit_app(container: AppContainer) -> FastAPI:
                 "login.html",
                 error="OpenAgent 令牌无效或平台暂时不可达，请重新从平台进入，或使用测试账号。",
                 test_username=settings.test_username,
+                show_test_login=True,
                 status_code=401,
             )
 
-        return render(request, "login.html", error=None, test_username=settings.test_username)
+        return render(
+            request,
+            "login.html",
+            error=None,
+            test_username=settings.test_username,
+            show_test_login=False,
+        )
 
     @app.post("/ui/login")
     def ui_login_post(
@@ -859,6 +871,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
                 "login.html",
                 error=message,
                 test_username=settings.test_username,
+                show_test_login=True,
                 status_code=401,
             )
 

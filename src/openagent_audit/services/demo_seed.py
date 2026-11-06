@@ -91,6 +91,40 @@ def _bulk_conversations(count: int = 24) -> list[dict]:
     return out
 
 
+def purge_demo_data(store: LocalTraceStore) -> int:
+    """Delete every demo trace from *store*. Returns how many were removed.
+
+    Hiding demo rows is not enough once the audit plane is connected to
+    OpenAgent: a reviewer must never be able to mistake sample conversations
+    for real ones, not even through the log archive or a stale page. Once any
+    real conversation exists the seeded rows are removed outright, so there is
+    nothing left to accidentally surface.
+
+    Safe to call at any time and on any store: a store without demo data is a
+    no-op, and a store that only holds demo data (a fresh local demo run) is
+    left alone — that is the one situation where they are the point.
+    """
+    if not hasattr(store, "list_traces"):
+        return 0
+
+    traces = list(store.list_traces())
+    if not traces:
+        return 0
+    if not any(not is_demo_session(t.session_id) for t in traces):
+        # Demo-only store: this is the local demo, keep it.
+        return 0
+
+    removed = 0
+    for trace in traces:
+        if is_demo_session(trace.session_id):
+            try:
+                store.delete_trace(trace.trace_id)
+                removed += 1
+            except Exception:  # noqa: BLE001 - best effort, never block reads
+                pass
+    return removed
+
+
 def seed_demo_data(settings: Settings, store: LocalTraceStore, db) -> int:
     """Seed sample conversations through the real masking pipeline. Returns
     the number of traces written."""

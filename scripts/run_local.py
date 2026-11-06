@@ -29,7 +29,7 @@ DEMO_USERS = "demo-alice:alice:user,demo-bob:bob:user"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin@123456"
 TEST_USERNAME = "test"
-TEST_PASSWORD = "test@1233456"
+TEST_PASSWORD = "test@123456"
 
 
 def main() -> int:

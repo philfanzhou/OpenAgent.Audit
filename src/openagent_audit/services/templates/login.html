@@ -6,12 +6,9 @@
     <h1>进入审计台</h1>
     <p class="sub">会话内容以脱敏形式展示。查看原文需要管理员登录。</p>
 
-    {# Two independent forms. They used to be one form with the test-account
-       fields inside a collapsed <details>; a collapsed block can drop its
-       fields from the submission, which made a correct test login arrive with
-       an empty username and look like "nothing was entered". Separate forms
-       remove that failure mode entirely. #}
-    <form action="/ui/login" method="post" style="margin-bottom:22px">
+    {# Primary path: OpenAgent hands the token over and this page signs the
+       user in automatically. The form below stays for pasting a token by hand. #}
+    <form action="/ui/login" method="post">
       <label for="token">OpenAgent 令牌</label>
       <input id="token" name="token" autocomplete="off" autofocus
              placeholder="由 OpenAgent 平台下发">
@@ -23,22 +20,30 @@
       </div>
     </form>
 
-    <hr style="border:none;border-top:1px solid var(--line);margin:0 0 18px">
+    <hr style="border:none;border-top:1px solid var(--line);margin:20px 0 16px">
 
-    <form action="/ui/login" method="post">
-      <label for="username">测试账号</label>
-      <input id="username" name="username" autocomplete="username"
-             placeholder="test" value="{{ test_username or '' }}">
-      <label for="password">测试账号密码</label>
-      <input id="password" name="password" type="password" autocomplete="current-password">
-      <p class="muted" style="margin:6px 0 0">
-        OpenAgent 未传递身份时使用。测试账号仅为普通用户，<strong>不能</strong>登录管理员，
-        且 1 小时后自动退出。
-      </p>
-      <div style="margin-top:12px">
-        <button type="submit">用测试账号登录</button>
-      </div>
-    </form>
+    {# Secondary path: the local test account, collapsed by default.
+       It is a separate <details>/<form>, so collapsing it only hides the form —
+       it can never strip fields from a submission, which is what broke the
+       earlier single-form layout. The form action is the same handler. #}
+    <details id="test-login" {% if show_test_login or error %}open{% endif %}>
+      <summary style="cursor:pointer;color:var(--ink-3);font-size:13.5px">
+        用测试账号登录（OpenAgent 未传递身份时使用）
+      </summary>
+      <form action="/ui/login" method="post" style="margin-top:14px">
+        <label for="username">测试账号</label>
+        <input id="username" name="username" autocomplete="username"
+               placeholder="test" value="{{ test_username or '' }}">
+        <label for="password">测试账号密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password">
+        <p class="muted" style="margin:6px 0 0">
+          仅为普通用户，<strong>不能</strong>登录管理员，1 小时后自动退出。
+        </p>
+        <div style="margin-top:12px">
+          <button type="submit">用测试账号登录</button>
+        </div>
+      </form>
+    </details>
 
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
   </div>

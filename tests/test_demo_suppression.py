@@ -49,14 +49,20 @@ def test_all_demo_visible_when_no_real_data(tmp_path, keypair):
     assert sessions and all(is_demo_session(s["session_id"]) for s in sessions)
 
 
-def test_real_data_hides_demo_and_blocks_seeding(tmp_path, keypair):
+def test_real_data_purges_demo(tmp_path, keypair):
+    """Once OpenAgent delivers a real conversation the samples are deleted.
+
+    Filtering alone left the demo rows in the store, where a stale page, a log
+    archive or a later query could surface them again. After connecting to the
+    platform the console must hold platform data only.
+    """
     from fastapi.testclient import TestClient
 
     from openagent_audit.services.audit_api import create_audit_app
 
     settings = _settings(tmp_path, keypair)
     container = build_container(settings)  # seeds 26 demo sessions
-    assert container.trace_store.list_sessions()
+    assert len(container.trace_store.list_sessions()) == 26
 
     # OpenAgent connects: a real conversation arrives
     _add_real_trace(container.trace_store)
@@ -64,23 +70,36 @@ def test_real_data_hides_demo_and_blocks_seeding(tmp_path, keypair):
     client = TestClient(create_audit_app(container))
     token = {"Authorization": "Bearer tok-a"}
     body = client.get("/v1/sessions", headers=token).json()
+
     assert body["total"] == 1
     assert body["sessions"][0]["session_id"] == "sess-real-1"
-    assert body["demo_hidden"] is True
 
-    # opt-in still shows the demo dataset
-    body_demo = client.get("/v1/sessions", headers=token,
-                           params={"include_demo": "true"}).json()
-    assert body_demo["total"] == 27
-    assert body_demo["demo_hidden"] is False
+    # Physically gone, not merely hidden: nothing remains to resurface.
+    remaining = container.trace_store.list_sessions()
+    assert all(not is_demo_session(s["session_id"]) for s in remaining)
+    assert len(remaining) == 1
 
-    # a fresh dev process seeds its own ephemeral store, but the view-level
-    # suppression (demo_hidden) is what keeps real views clean — verified above
-    container2 = build_container(settings)
-    assert len(container2.trace_store.list_traces()) == 26  # fresh ephemeral store
-    body2 = client.get("/v1/sessions", headers=token).json()  # original store untouched
-    assert body2["total"] == 1 and body2["demo_hidden"] is True
-    assert any(t.trace_id == "tr-real-1" for t in container.trace_store.list_traces())
+
+def test_demo_is_kept_while_store_has_no_real_data(tmp_path, keypair):
+    """A local demo store stays useful: samples are only purged once real data
+    exists, otherwise the console would be empty for no reason."""
+    settings = _settings(tmp_path, keypair)
+    container = build_container(settings)
+
+    assert len(container.trace_store.list_sessions()) == 26
+    assert len(container.trace_store.list_traces()) == 26
+
+
+def test_purge_is_idempotent_and_safe():
+    from openagent_audit.services.demo_seed import purge_demo_data
+
+    class Empty:
+        def list_traces(self):
+            return []
+
+    # No store / empty store are no-ops rather than errors.
+    assert purge_demo_data(Empty()) == 0
+    assert purge_demo_data(object()) == 0
 
 
 def test_seeding_skipped_when_only_real_data(tmp_path, keypair):

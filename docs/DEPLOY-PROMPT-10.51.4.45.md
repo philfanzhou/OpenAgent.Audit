@@ -79,7 +79,7 @@ df -h /opt /var/lib/docker
 # 3.1 拉取两个仓库
 cd ~
 git clone https://github.com/philfanzhou/OpenAgent.Audit.git
-cd OpenAgent.Audit && git log --oneline -1     # 确认是 7f3466d 或更新
+cd OpenAgent.Audit && git log --oneline -1     # 确认是 173b5fa 或更新
 
 cd ~
 git clone https://github.com/philfanzhou/OpenAgent.git
@@ -193,7 +193,7 @@ python3 scripts/hash_admin_password.py --password 'admin@123456'
 
 ```
 AUDIT_TEST_USERNAME=test
-AUDIT_TEST_PASSWORD=test@1233456
+AUDIT_TEST_PASSWORD=test@123456
 AUDIT_TEST_SESSION_MINUTES=60
 ```
 
@@ -266,7 +266,7 @@ docker network ls | grep -E 'openagent(-audit)?$'   # 应有两行
 ```
 
 **浏览器验收**：`http://10.51.4.45:8100/ui/login`
-- 用测试账号 `test` / `test@1233456` 登录 → 应只看到「普通用户」，**没有**「登录管理员」按钮
+- 用测试账号 `test` / `test@123456` 登录 → 应只看到「普通用户」，**没有**「登录管理员」按钮
 - 能浏览会话列表（会是空的或演示数据）
 
 > 此时 OpenAgent 还没接进来，audit 里不会有真实数据，这是正常的。
@@ -450,7 +450,7 @@ sudo docker compose --env-file .env stop
 | `unable to prepare context: path ".../Backend/src/..."` | 用了拆分前的旧脚本 | 确认已拉最新代码 |
 | `warning: Frontend/OpenAgent.Chat/Dockerfile not found` | 前端在独立仓库 | 正常，后端照常构建 |
 | audit-web 会话页 500 | `LANGFUSE_*` 为空 | 完成 4.5 后重启 `audit-api` |
-| 测试账号登录后仍能看到「登录管理员」 | 代码不是最新版 | 确认 audit 提交为 `7f3466d` 或更新 |
+| 测试账号登录后仍能看到「登录管理员」 | 代码不是最新版 | 确认 audit 提交为 `173b5fa` 或更新 |
 
 ---
 
@@ -464,6 +464,7 @@ sudo docker compose --env-file .env stop
 - [ ] OpenAgent health 全部 200，外链 `https://agent.monolithicpower.com:444/health` 为 200
 - [ ] `forwarded_batches` 有增长且 `batches_dropped` 为 0
 - [ ] 审计台能看到真实会话，且内容是脱敏的
+- [ ] 审计台里**没有**演示数据（会话编号不以 `sess-demo-` 开头）；若有，说明真实数据已到但演示数据未清除，立即报告
 - [ ] 管理员登录后可查看原文，审计日志有对应记录
 - [ ] 备份文件路径已记录
 
