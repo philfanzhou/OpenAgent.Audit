@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from openagent_audit.config import Settings, UserEntry
+from openagent_audit.tls import httpx_tls_kwargs
 
 VIEW_MASKED = "view_masked"
 MANAGE_RESTORE = "manage_restore"
@@ -108,6 +109,7 @@ def load_authenticator(settings: Settings) -> Authenticator:
         return HttpIntrospectionAuthenticator(
             settings.auth_introspect_url,
             cache_seconds=settings.auth_cache_seconds,
+            tls=httpx_tls_kwargs(settings),
         )
     return Authenticator(settings.users)
 
@@ -126,7 +128,7 @@ class HttpIntrospectionAuthenticator(Authenticator):
     cached for ``cache_seconds`` to keep the platform out of the hot path.
     """
 
-    def __init__(self, introspect_url: str, *, cache_seconds: float = 60.0, client: IntrospectionClient | None = None) -> None:
+    def __init__(self, introspect_url: str, *, cache_seconds: float = 60.0, client: IntrospectionClient | None = None, tls: dict | None = None) -> None:
         super().__init__(())
         if not introspect_url:
             raise ValueError(
@@ -135,6 +137,7 @@ class HttpIntrospectionAuthenticator(Authenticator):
         self._url = introspect_url
         self._cache_ttl = cache_seconds
         self._client = client
+        self._tls = tls or {}
         self._cache: dict[str, tuple[float, Principal]] = {}
         self._lock = threading.Lock()
 
@@ -143,7 +146,7 @@ class HttpIntrospectionAuthenticator(Authenticator):
             return self._client.get(self._url, headers={"Authorization": f"Bearer {token}"})
         import httpx
 
-        with httpx.Client(timeout=5.0) as client:
+        with httpx.Client(timeout=5.0, **self._tls) as client:
             return client.get(self._url, headers={"Authorization": f"Bearer {token}"})
 
     def resolve(self, token: str | None) -> Principal | None:

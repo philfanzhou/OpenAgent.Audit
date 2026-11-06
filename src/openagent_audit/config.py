@@ -112,6 +112,16 @@ class Settings:
     # Loki copy for real-time alerting; empty disables the fan-out.
     loki_url: str = ""
 
+    # Outbound TLS trust for every HTTP client this process creates
+    # (Langfuse, Loki, decrypt-svc, the optional introspection endpoint).
+    # Empty = the system CA bundle. Point this at an internal CA bundle when
+    # those targets use certificates the container does not already trust;
+    # ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE`` are honoured as fallbacks, and
+    # a deployment can opt out of verification entirely with
+    # AUDIT_TLS_VERIFY=false (documented as a last resort).
+    ca_bundle_path: str = ""
+    tls_verify: bool = True
+
     # Retention / compliance knobs (proposal §10-11; confirm with compliance).
     trace_retention_days: int = 90
     audit_archive_after_days: int = 30
@@ -198,6 +208,13 @@ class Settings:
             langfuse_secret_key=e.get("LANGFUSE_SECRET_KEY", ""),
             decrypt_svc_url=e.get("AUDIT_DECRYPT_SVC_URL", ""),
             loki_url=e.get("LOKI_URL", ""),
+            ca_bundle_path=_first_non_empty(
+                e.get("AUDIT_CA_BUNDLE"),
+                e.get("REQUESTS_CA_BUNDLE"),
+                e.get("SSL_CERT_FILE"),
+            ),
+            tls_verify=e.get("AUDIT_TLS_VERIFY", "true").strip().lower()
+            not in ("0", "false", "no", "off"),
             trace_retention_days=int(e.get("AUDIT_TRACE_RETENTION_DAYS", "90")),
             audit_archive_after_days=int(e.get("AUDIT_ARCHIVE_AFTER_DAYS", "30")),
             reveal_ttl_minutes=int(e.get("AUDIT_REVEAL_TTL_MINUTES", "60")),
@@ -279,6 +296,13 @@ class Settings:
                 "AUDIT_ARCHIVE_AFTER_DAYS must be >= 1 and <= AUDIT_TRACE_RETENTION_DAYS "
                 f"(got {self.audit_archive_after_days} vs {self.trace_retention_days})"
             )
+
+
+def _first_non_empty(*values: str | None) -> str:
+    for value in values:
+        if value and value.strip():
+            return value.strip()
+    return ""
 
 
 def _parse_users(raw: str) -> tuple[UserEntry, ...]:

@@ -226,7 +226,10 @@ class LangfuseTraceStore:
     callers that need fields the normalised record drops.
     """
 
-    def __init__(self, base_url: str, public_key: str, secret_key: str, client=None) -> None:
+    def __init__(
+        self, base_url: str, public_key: str, secret_key: str,
+        client=None, tls: dict | None = None,
+    ) -> None:
         if client is not None:
             self._client = client
         else:
@@ -236,6 +239,7 @@ class LangfuseTraceStore:
                 base_url=base_url.rstrip("/"),
                 auth=(public_key, secret_key),
                 timeout=15.0,
+                **(tls or {}),
             )
 
     def list_trace_dicts(

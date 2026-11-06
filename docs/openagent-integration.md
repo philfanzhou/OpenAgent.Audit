@@ -162,6 +162,28 @@ Langfuse worker 的假设等价），网关内存处理不落盘、令牌认证�
 `masking-gateway:8102` 直连；audit-db、Langfuse、decrypt-svc 仍只在 audit
 网络内，对平台不可见。
 
+#### 2.0.4 HTTPS / 内网 CA 场景
+
+两种接法都能用，取决于网关是否暴露到 TLS 反向代理之后：
+
+| 接法 | 端点示例 | 说明 |
+|---|---|---|
+| 容器网络直连（推荐） | `http://masking-gateway:8102` | 同主机同 Docker 网络，不经代理，无 TLS 开销 |
+| 经反向代理（HTTPS） | `https://agent.monolithicpower.com:444/audit-otlp` | 网关不直接发布端口时使用 |
+
+经 HTTPS 接入时注意两点：
+
+1. **OpenAgent 侧要能信任内网证书**。OTLP exporter 自建 HttpClient，
+   默认走系统证书库；内网自签名证书会被拒绝且**导出静默失败**（服务照常健康）。
+   部署侧用 `OPENAGENT_ALLOW_INSECURE_TLS=true` 放开，或把内网 CA 装进容器的
+   信任库（更推荐）。
+2. **audit 侧出站调用同理**。设置 `AUDIT_CA_BUNDLE` 指向公司 CA 文件；
+   `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` 也认。`AUDIT_TLS_VERIFY=false`
+   可完全关闭校验，但会在启动时打警告，应作为最后手段。
+
+已用真实自签名 TLS 代理（`:444`，模拟 `agent.monolithicpower.com`）端到端验证：
+未开信任开关时不崩溃、仅不转发；打开后 trace 正常入库并完成脱敏与标识映射。
+
 **Python Agent 仍走原路径**（Langfuse Python SDK + mask_otel_spans 进程内
 脱敏）；两条路径共享同一套 PII 管线与密文表，掩码结果完全一致。
 
