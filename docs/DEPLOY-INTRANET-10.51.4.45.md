@@ -321,8 +321,25 @@ cd /opt/OpenAgent
 sudo scripts/build-images.sh --env-file .env --docker-mode docker
 ```
 
+脚本会构建 `openagent-engine` / `openagent-router` / `openagent-runner` 三个镜像。
+
+**关于 Chat 镜像**：前端工作台已拆到独立仓库（OpenAgent-Frontend），本仓库不含
+`Frontend/OpenAgent.Chat`。脚本检测到目录缺失且本地无该镜像时会**打印警告并跳过**，
+不中断后端构建。因此：
+
+- 若你们已在别处构建好 Chat 镜像，确保 `.env` 的 `OPENAGENT_CHAT_IMAGE` 指向它；
+- 若暂时不需要 Chat，把 `deploy/openagent/docker-compose.yml` 里 `chat` 服务及其相关
+  依赖（nginx 的 `depends_on: chat`）注释掉，或先 `docker tag` 一个占位镜像。
+
 > 走内网镜像仓库时改为 `sudo docker pull <镜像标签>`，并确认 `.env` 中
 > `OPENAGENT_ENGINE_IMAGE` / `OPENAGENT_ROUTER_IMAGE` / `OPENAGENT_CHAT_IMAGE` 指向新标签。
+
+**若报 `syntax error near unexpected token`**：脚本行尾是 CRLF（Windows 检出）。
+本次更新已加入 `.gitattributes` 并转为 LF；若是旧检出，执行：
+
+```bash
+sudo sed -i 's/\r$//' scripts/*.sh
+```
 
 ### 3.6 部署
 
@@ -416,6 +433,10 @@ sudo docker compose --env-file .env stop
 | audit-web 会话页 500 | `LANGFUSE_*` 为空 | 完成 2.5 后重启 `audit-api` |
 | engine 日志里 `langfuse forward failed` / TLS 错误 | 目标证书不被信任 | 装公司 CA 到容器信任库，或临时 `OPENAGENT_ALLOW_INSECURE_TLS=true` |
 | 端口冲突 | 3000 / 3100 / 8100 / 8102 被占 | 停占用方或改 compose 的 `ports` |
+| `build-images.sh: syntax error near unexpected token` | 脚本是 CRLF 行尾 | `sudo sed -i 's/\r$//' scripts/*.sh`；本次更新已自带 `.gitattributes` |
+| `unable to prepare context: path ".../Backend/src/..." not found` | 用了拆分前的旧脚本 | 本次更新已改为 `src/...`，确认已拉最新代码 |
+| `warning: Frontend/OpenAgent.Chat/Dockerfile not found` | 前端已拆到 OpenAgent-Frontend 仓库 | 正常，后端镜像照常构建；需要 Chat 时另行准备镜像 |
+| CI 报 `Backend/OpenAgent.sln` 或前端 job 失败 | 拆分后路径未同步 | 本次更新已修复并加检测 job |
 
 ---
 
