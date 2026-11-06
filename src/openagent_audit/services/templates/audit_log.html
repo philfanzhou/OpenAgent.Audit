@@ -2,33 +2,79 @@
 {% block title %}审计日志 · OpenAgent 审计台{% endblock %}
 {% block content %}
 <h1>审计日志</h1>
-<p class="sub">append-only + 哈希链；正本归档至 Object Lock 桶，Loki 仅存告警副本。</p>
-<div class="card" style="margin-bottom:16px">
-  {% if verification.ok %}
-    <span class="pill ok">哈希链完整</span>
-  {% else %}
-    <span class="pill risk">哈希链损坏 · 首个坏条目 #{{ verification.first_bad_seq }}</span>
-  {% endif %}
-  <span class="muted" style="margin-left:10px">共 {{ verification.entries }} 条</span>
+<p class="sub">
+  共 {{ total }} 条，显示第 {{ page }}/{{ total_pages }} 页（每页 {{ page_size }} 条，最多 {{ max_visible }} 条）。
+  时间均为 {{ display_zone_label }}（存储使用 UTC）。日志按哈希链追加写入，任何删改都会被发现。
+</p>
+
+<form class="filters" method="get" action="/ui/audit-log">
+  <div>
+    <label for="q">关键字</label>
+    <input id="q" name="q" value="{{ q }}" placeholder="账号 / 动作 / 对象">
+  </div>
+  <div>
+    <label for="from_ts">开始时间</label>
+    <input id="from_ts" name="from_ts" type="datetime-local" value="{{ from_ts }}">
+  </div>
+  <div>
+    <label for="to_ts">结束时间</label>
+    <input id="to_ts" name="to_ts" type="datetime-local" value="{{ to_ts }}">
+  </div>
+  <div>
+    <label for="role">角色</label>
+    <select id="role" name="role">
+      <option value="">全部</option>
+      <option value="user" {{ 'selected' if role == 'user' }}>普通用户</option>
+      <option value="admin" {{ 'selected' if role == 'admin' }}>管理员</option>
+      <option value="service" {{ 'selected' if role == 'service' }}>服务</option>
+    </select>
+  </div>
+  <div>
+    <label for="action">动作</label>
+    <input id="action" name="action" value="{{ action }}" placeholder="如 ADMIN_LOGIN">
+  </div>
+  <div class="actions">
+    <button class="primary" type="submit">搜索</button>
+    <a class="btn" href="/ui/audit-log">重置</a>
+  </div>
+</form>
+
+{% if verification %}
+<div class="card" style="padding:12px 22px">
+  <span class="pill {{ 'ok' if verification.ok else 'risk' }}">
+    {% if verification.ok %}哈希链完整{% else %}哈希链异常（第 {{ verification.first_bad_seq }} 条）{% endif %}
+  </span>
+  <span class="muted">共校验 {{ verification.entries }} 条记录</span>
 </div>
-<div class="card" style="padding:0">
+{% endif %}
+
+{% if not entries %}
+  <div class="card"><p class="muted" style="margin:0">没有符合条件的记录。</p></div>
+{% else %}
 <table>
-  <thead><tr><th>#</th><th>时间</th><th>操作者</th><th>角色</th><th>动作</th><th>对象</th></tr></thead>
+  <thead>
+    <tr>
+      <th>时间 ({{ display_zone_label }})</th>
+      <th>账号</th>
+      <th>角色</th>
+      <th>动作</th>
+      <th>对象</th>
+      <th>详情</th>
+    </tr>
+  </thead>
   <tbody>
   {% for e in entries %}
     <tr>
-      <td>{{ e.seq }}</td>
-      <td class="mono">{{ e.ts|tsformat('%m-%d %H:%M:%S') }}</td>
-      <td>{{ e.actor }}</td>
-      <td>{{ e.role }}</td>
+      <td class="mono">{{ e.ts|tsformat }}</td>
+      <td><code>{{ e.actor }}</code></td>
+      <td><span class="pill {{ 'ok' if e.role == 'admin' else 'mute' }}">{{ role_labels.get(e.role, e.role) }}</span></td>
       <td><code>{{ e.action }}</code></td>
-      <td class="mono">
-        {% if e.object_type %}{{ e.object_type }}{% endif %}
-        {% if e.object_id %} · {{ e.object_id[:20] }}{% endif %}
-      </td>
+      <td class="muted">{{ e.object_type or '-' }}<br><code>{{ e.object_id or '' }}</code></td>
+      <td class="muted">{% if e.detail %}<code>{{ e.detail }}</code>{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
-</div>
+{% include "_pager.html" %}
+{% endif %}
 {% endblock %}

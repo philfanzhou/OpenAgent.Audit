@@ -167,34 +167,72 @@ class PostgresAuditDatabase:
             prev_hash=prev_hash, entry_hash=eh,
         )
 
+    def _audit_filters(
+        self,
+        *,
+        q: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        role: str | None = None,
+        action: str | None = None,
+        before_seq: int | None = None,
+    ) -> tuple[str, list[object]]:
+        """Build the shared WHERE clause so listing and counting agree."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if before_seq is not None:
+            clauses.append("seq < %s")
+            params.append(before_seq)
+        if from_ts is not None:
+            clauses.append("ts >= %s")
+            params.append(from_ts)
+        if to_ts is not None:
+            clauses.append("ts < %s")
+            params.append(to_ts)
+        if role:
+            clauses.append("role = %s")
+            params.append(role)
+        if action:
+            clauses.append("action LIKE %s")
+            params.append(f"%{action}%")
+        if q:
+            clauses.append(
+                "(actor LIKE %s OR action LIKE %s OR object_type LIKE %s "
+                "OR object_id LIKE %s OR role LIKE %s)"
+            )
+            like = f"%{q}%"
+            params += [like, like, like, like, like]
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
     def list_audit(
         self,
         limit: int = 200,
         before_seq: int | None = None,
         q: str | None = None,
         offset: int = 0,
+        *,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        role: str | None = None,
+        action: str | None = None,
     ) -> list[AuditEntry]:
+        where, params = self._audit_filters(
+            q=q, from_ts=from_ts, to_ts=to_ts, role=role, action=action, before_seq=before_seq
+        )
         query = (
             "SELECT seq, ts, actor, role, action, object_type, object_id, detail, "
             "prev_hash, entry_hash FROM audit_log"
+            + where
+            + " ORDER BY seq DESC LIMIT %s OFFSET %s"
         )
-        params: list[object] = []
-        if before_seq is not None:
-            query += " WHERE seq < %s"
-            params.append(before_seq)
-        if q:
-            clauses = "(actor LIKE %s OR action LIKE %s OR object_type LIKE %s OR object_id LIKE %s OR role LIKE %s)"
-            like = f"%{q}%"
-            query += (" WHERE " if before_seq is None else " AND ") + clauses
-            params += [like, like, like, like, like]
-        query += " ORDER BY seq DESC LIMIT %s OFFSET %s"
         params += [limit, offset]
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [
             AuditEntry(
                 seq=r[0], ts=r[1], actor=r[2], role=r[3], action=r[4],
-                object_type=r[5], object_id=r[6], detail=r[7] if isinstance(r[7], dict) else json.loads(r[7]),
+                object_type=r[5], object_id=r[6],
+                detail=r[7] if isinstance(r[7], dict) else json.loads(r[7]),
                 prev_hash=r[8], entry_hash=r[9],
             )
             for r in rows
@@ -229,16 +267,19 @@ class PostgresAuditDatabase:
             (n,) = conn.execute(query, params).fetchone()
         return int(n)
 
-    def count_audit_entries(self, q: str | None = None) -> int:
-        query = "SELECT COUNT(*) FROM audit_log"
-        params: list[object] = []
-        if q:
-            query += (
-                " WHERE actor LIKE %s OR action LIKE %s OR object_type LIKE %s"
-                " OR object_id LIKE %s OR role LIKE %s"
-            )
-            like = f"%{q}%"
-            params = [like, like, like, like, like]
+    def count_audit_entries(
+        self,
+        q: str | None = None,
+        *,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        role: str | None = None,
+        action: str | None = None,
+    ) -> int:
+        where, params = self._audit_filters(
+            q=q, from_ts=from_ts, to_ts=to_ts, role=role, action=action
+        )
+        query = "SELECT COUNT(*) FROM audit_log" + where
         with self._connect() as conn:
             (n,) = conn.execute(query, params).fetchone()
         return int(n)

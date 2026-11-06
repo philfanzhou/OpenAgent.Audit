@@ -1,14 +1,39 @@
 {% extends "base.html" %}
 {% block title %}登录 · OpenAgent 审计台{% endblock %}
 {% block content %}
-<div class="card login">
-  <h1>OpenAgent 审计台</h1>
-  <p class="sub">掩码浏览 · 授权核验 · 全程留痕</p>
-  <form method="post" action="/ui/login">
-    <label for="token">访问令牌</label>
-    <input id="token" name="token" type="password" autofocus autocomplete="off">
-    <p style="margin-top:14px"><button class="primary" type="submit">登录</button></p>
-  </form>
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+<div class="login">
+  <div class="card">
+    <h1>进入审计台</h1>
+    <p class="sub">
+      会话内容以脱敏形式展示。查看原文需要管理员登录。
+    </p>
+
+    <form action="/ui/login" method="post">
+      <label for="token">OpenAgent 令牌</label>
+      <input id="token" name="token" autocomplete="off" autofocus
+             placeholder="由 OpenAgent 平台下发">
+      <p class="muted" style="margin:6px 0 0">
+        平台会把登录用户的令牌带到本页；若已由平台跳转进来，通常无需手动填写。
+      </p>
+
+      <details style="margin-top:18px">
+        <summary style="cursor:pointer;color:var(--ink-3);font-size:13px">
+          改用测试账号登录（OpenAgent 未传递身份时使用）
+        </summary>
+        <label for="username">账号</label>
+        <input id="username" name="username" autocomplete="username" placeholder="test">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password">
+        <p class="muted" style="margin:6px 0 0">
+          测试账号仅为普通用户，<strong>不能</strong>登录管理员，且 1 小时后自动退出。
+        </p>
+      </details>
+
+      <div style="margin-top:18px">
+        <button class="primary" type="submit">登录</button>
+      </div>
+    </form>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  </div>
 </div>
 {% endblock %}

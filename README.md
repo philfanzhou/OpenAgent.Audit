@@ -8,18 +8,94 @@ The audit and observability data plane for OpenAgent: records user request detai
 > retention jobs, and the Langfuse export hook. See [Implementation](#implementation).
 
 - **Trace data**: self-hosted Langfuse open-source edition (Postgres + ClickHouse + Redis + S3 event bucket); every Agent reports through the Langfuse Python SDK, and masking plus export run on the background export thread, not the request thread
-- **Display-time masking (Mode B)**: at ingestion, each sensitive entity detected by Presidio becomes an `entity ID + mask` in the trace; its AES-256-GCM ciphertext (data key wrapped with a public key) goes to a separate vault table. Audit views render the stored masks without decrypting; compliance leads can restore single records after approval, and only the decrypt service can use the private key in KMS
+- **Two roles, one console**: every identity the OpenAgent platform vouches for signs in as an ordinary `user` and sees masked conversations. Inside that session an administrator can step up with the admin credentials; masked values then become clickable, and clicking one decrypts that single value. Only the decrypt service ever holds the private key
+- **Display-time masking (Mode B)**: at ingestion, each sensitive entity detected by Presidio becomes an `entity ID + mask` in the trace; its AES-256-GCM ciphertext (data key wrapped with a public key) goes to a separate vault table. Audit views render the stored masks without decrypting
+- **Every reveal is recorded first**: the audit entry is written before the plaintext is returned, so an unlogged reveal is impossible; the append-only hash chain makes later edits and deletions detectable
 - **Multimodal media**: images and files are encrypted on the Agent with the same public key and uploaded directly to S3-compatible object storage (SeaweedFS / MinIO, SSE-KMS); traces store only `s3://` key + sha256 references, and viewing an original follows the same approval flow
-- **Audit log**: browsing, restore requests, approvals, and decryptions go to an append-only, hash-chained audit log table, archived to an Object Lock bucket; Loki receives only a copy for real-time alerting
+- **Audit log**: sign-ins, administrative step-ups, browsing and every decryption go to an append-only, hash-chained audit log table, archived to an Object Lock bucket; Loki receives only a copy for real-time alerting
 - **Storage boundary**: conversation business storage (session restore / continuation, backed by the business's own online store such as Postgres) is separate from this audit store; the two correlate by conversation id. This repo is not a business data source.
 
 Loki carries only regular service logs (errors, metadata) and the alerting copy of audit events — never prompt storage.
+
+## Roles and the administrator policy
+
+The audit console is an internal IT tool, so it has exactly two roles.
+
+| Role | How you get it | What you can do |
+|---|---|---|
+| `user` | Your OpenAgent identity (or the local test account) | Browse sessions and read **masked** conversations |
+| `admin` | Click **登录管理员** inside a signed-in session and enter the admin credentials | Everything above, plus click a mask to reveal that one value |
+
+### Who am I? (identity sources)
+
+The console learns your identity from OpenAgent — it does not keep its own
+user list.
+
+| Source | When it is used | Identity |
+|---|---|---|
+| OpenAgent `/api/v1/agent/me` (`AUDIT_AUTH_PROVIDER=http`) | Normal path: the browser carries a platform token | The platform's `username`/`userId`. Always `user` |
+| `AUDIT_USERS` (`AUDIT_AUTH_PROVIDER=static`) | Local runs with no platform | The configured name. Always `user` |
+| Local test account (`AUDIT_TEST_USERNAME`) | Fallback when the platform forwards no identity | `test`, marked `ephemeral` |
+
+Every platform identity becomes `user`, whatever roles the platform reports:
+a role claim in the token never grants the administrator capability here.
+
+### The local test account
+
+`test` / `test@1233456` exists so somebody can confirm the console renders when
+OpenAgent is not forwarding an identity. It is deliberately limited:
+
+- **always an ordinary user** — it cannot unlock the administrator role, the
+  button is not rendered, and a direct attempt is refused (403) and logged as
+  `ADMIN_LOGIN_REFUSED`;
+- **expires after one hour** (`AUDIT_TEST_SESSION_MINUTES`);
+- **disabled** by leaving `AUDIT_TEST_USERNAME`/`AUDIT_TEST_PASSWORD` empty.
+
+Its credentials are documented here, which is exactly why it must never be
+able to decrypt.
+
+### Administrator password storage
+
+Store a **hash**, not the plaintext:
+
+```bash
+python scripts/hash_admin_password.py --password 'your-admin-password'
+# -> pbkdf2_sha256$210000$<salt>$<hash>   → AUDIT_ADMIN_PASSWORD_HASH
+```
+
+The console then verifies the password against the hash (PBKDF2-HMAC-SHA256,
+210 000 iterations, constant-time compare). A leaked `.env` no longer hands out
+decryption capability, and `AUDIT_ADMIN_PASSWORD` (plaintext) is ignored when a
+hash is configured.
+
+### Unlock policy (configurable via `.env`)
+
+| Setting | Default | Effect |
+|---|---|---|
+| `AUDIT_ADMIN_SESSION_MINUTES` | `5` | The unlock expires five minutes after login; the session drops back to `user` automatically, even if the browser sends no further requests |
+| `AUDIT_ADMIN_COOLDOWN_MINUTES` | `10` | After the unlock ends (by timeout **or** by 退出管理员) the same account cannot unlock again for ten minutes. A blocked attempt is logged as `ADMIN_LOGIN_BLOCKED` |
+
+**Search and paging**: the session list and the audit log both page at ten
+rows per page, twenty pages maximum (200 rows). Anything older is reached with
+a filter — date range, role, action, account or keyword — rather than by
+paging forever. Filters accept local time (`YYYY-MM-DDTHH:MM`).
+
+**Timezone**: every entry is **stored in UTC** and **rendered** in
+`AUDIT_DISPLAY_TIMEZONE` (default `Asia/Shanghai`). Pages show the zone label
+in the footer; the JSON API returns both `ts` (UTC) and `ts_display`.
+
+| Setting | Default | Effect |
+|---|---|---|
+| `AUDIT_ADMIN_USERNAME` | `admin` | Administrator account name |
+| `AUDIT_ADMIN_PASSWORD_HASH` | *(empty)* | Preferred: `python scripts/hash_admin_password.py` — a leaked `.env` then cannot decrypt |
+| `AUDIT_ADMIN_PASSWORD` | *(empty)* | Plaintext, for local runs only; the hash wins when both are set. Leave both empty to close the admin login entirely |
+| `AUDIT_DISPLAY_TIMEZONE` | `Asia/Shanghai` | Zone used to render and to interpret date filters |
 
 ## Implementation
 
 ```
 src/openagent_audit/
-├── config.py                  # env-driven settings (retention, roles, backends)
+├── config.py                  # env-driven settings (retention, admin policy, backends)
 ├── crypto/                    # AES-256-GCM envelope encryption
 │   ├── envelope.py            #   RSA-OAEP public-key wrap + AWS KMS variant
 │   └── keys.py                #   key custody: local PEM (decrypt-svc only) / KMS
@@ -44,9 +120,9 @@ src/openagent_audit/
 │   └── otlp.py                #   protobuf/gRPC decoding, mask+seal, JSON re-encode
 ├── alerts/loki.py             # audit-event copies for alerting only
 ├── services/                  # read side
-│   ├── audit_api.py           #   audit-api REST + audit-web UI (3 roles)
+│   ├── audit_api.py           #   audit-api REST + audit-web UI (user/admin)
 │   ├── decrypt_svc.py         #   decrypt-svc: sole ciphertext reader
-│   ├── restore_service.py     #   request -> four-eyes approve -> reveal (TTL)
+│   ├── reveal_service.py      #   admin click -> record -> decrypt one entity
 │   ├── retention.py           #   purge + Object-Lock archive + watermark
 │   └── templates/             #   server-rendered audit-web pages
 └── agent/instrument.py        # agent-side reporting (media swap, identifiers)
@@ -57,7 +133,8 @@ src/openagent_audit/
 ```bash
 pip install -e ".[dev,langfuse,postgres,s3,otlp]"
 python scripts/provision_keys.py --out keys --passphrase "..."
-set AUDIT_USERS=token-a:alice:auditor,token-b:bob:compliance_lead,token-c:carol:compliance_lead
+set AUDIT_USERS=token-a:alice:user,token-b:bob:user
+set AUDIT_ADMIN_PASSWORD=admin@123456   # local only; use AUDIT_ADMIN_PASSWORD_HASH in production
 set AUDIT_PRIVATE_KEY_PATH=keys/audit_private_key.pem
 set AUDIT_PRIVATE_KEY_PASSPHRASE=...
 set AUDIT_PUBLIC_KEY_PATH=keys/audit_public_key.pem

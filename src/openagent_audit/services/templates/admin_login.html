@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}管理员登录 · OpenAgent 审计台{% endblock %}
+{% block content %}
+<div class="login">
+  <div class="card">
+    <h1>管理员登录</h1>
+    <p class="sub">
+      当前会话：<strong>{{ session_user }}</strong><br>
+      登录后可以点击脱敏内容查看原文。<strong>每次查看都会记录到审计日志</strong>，
+      并注明是哪个账号在什么时间查看了哪一条。
+    </p>
+    <form action="/ui/admin/login" method="post">
+      <label for="username">管理员账号</label>
+      <input id="username" name="username" autocomplete="username" autofocus required>
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <div style="margin-top:16px">
+        <button class="primary" type="submit">登录</button>
+        <a class="btn" href="/ui/sessions">返回</a>
+      </div>
+    </form>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

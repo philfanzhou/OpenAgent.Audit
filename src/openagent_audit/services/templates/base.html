@@ -9,14 +9,14 @@
       --bg: #f5f6f8; --surface: #fff; --surface-2: #f0f2f5; --line: #e2e5ea;
       --ink: #111827; --ink-2: #464f60; --ink-3: #6b7384;
       --accent: #2b4acb; --accent-soft: #eaeefc;
-      --ok: #15803d; --risk: #b42318;
+      --ok: #15803d; --risk: #b42318; --warn: #b45309;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #0b0e13; --surface: #131820; --surface-2: #1a2029; --line: #252c38;
         --ink: #e8ebf1; --ink-2: #aeb6c4; --ink-3: #8b94a4;
         --accent: #8fa3ff; --accent-soft: rgba(143,163,255,.13);
-        --ok: #4ade80; --risk: #f87171;
+        --ok: #4ade80; --risk: #f87171; --warn: #fbbf24;
       }
     }
     * { box-sizing: border-box; }
@@ -29,6 +29,10 @@
     header nav a { color:var(--ink-2); text-decoration:none; padding:5px 12px; border-radius:8px; }
     header nav a:hover { background:var(--surface-2); color:var(--ink); }
     header form { margin:0; }
+    .who { display:flex; align-items:center; gap:10px; }
+    .badge { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:600; }
+    .badge.user { background:var(--surface-2); color:var(--ink-2); }
+    .badge.admin { background:rgba(21,128,61,.14); color:var(--ok); }
     .wrap { max-width:1080px; margin:32px auto; padding:0 24px; }
     h1 { font-size:22px; margin:0 0 4px; }
     .sub { color:var(--ink-3); font-size:13.5px; margin:0 0 24px; }
@@ -41,6 +45,13 @@
     code,.mono { font-family:ui-monospace,Consolas,monospace; font-size:.9em; }
     .ent { background:var(--surface-2); color:var(--ink-2); border:1px dashed var(--ink-3);
       border-radius:5px; padding:1px 6px; font-family:ui-monospace,Consolas,monospace; font-size:.9em; }
+    /* Clickable mask: only rendered for an unlocked administrator. */
+    button.ent-click { cursor:pointer; border-style:solid; border-color:var(--accent);
+      background:var(--accent-soft); color:var(--accent); font:inherit; font-size:.9em;
+      font-family:ui-monospace,Consolas,monospace; padding:1px 7px; }
+    button.ent-click:hover { filter:brightness(.96); }
+    .revealed { background:rgba(180,35,24,.10); color:var(--risk); border:1px solid var(--risk);
+      border-radius:5px; padding:1px 6px; font-family:ui-monospace,Consolas,monospace; font-size:.9em; }
     .msg { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:12px 16px; line-height:2; }
     .pill { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:550; }
     .pill.b3 { background:var(--accent-soft); color:var(--accent); }
@@ -51,6 +62,7 @@
       padding:5px 14px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink); }
     button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
     button.danger { background:transparent; border-color:var(--risk); color:var(--risk); }
+    a.btn { text-decoration:none; display:inline-block; }
     input, textarea, select { font:inherit; padding:6px 10px; border:1px solid var(--line);
       border-radius:8px; background:var(--surface); color:var(--ink); width:100%; }
     label { display:block; font-size:13px; color:var(--ink-3); margin:10px 0 4px; }
@@ -61,6 +73,20 @@
     .muted { color:var(--ink-3); font-size:12.5px; }
     pre { white-space:pre-wrap; word-break:break-all; }
     form.inline { display:inline; }
+    .notice { background:var(--accent-soft); border:1px solid var(--accent); color:var(--ink);
+      border-radius:10px; padding:10px 16px; font-size:13.5px; margin-bottom:16px; }
+    /* Filter bar shared by the session list and the audit log. */
+    .filters { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;
+      background:var(--surface); border:1px solid var(--line); border-radius:12px;
+      padding:14px 18px; margin-bottom:18px; }
+    .filters > div { flex:1; min-width:150px; }
+    .filters > div.actions { flex:0 0 auto; display:flex; gap:8px; min-width:0; }
+    .filters label { margin-top:0; }
+    .toolbar { margin:0 0 18px; }
+    .pager { display:flex; align-items:center; gap:12px; margin-top:16px; }
+    #toast { position:fixed; right:24px; bottom:24px; max-width:420px; z-index:10;
+      background:var(--surface); border:1px solid var(--line); border-radius:10px;
+      padding:12px 16px; box-shadow:0 6px 24px rgba(17,24,39,.16); font-size:13.5px; display:none; }
   </style>
 </head>
 <body>
@@ -68,16 +94,74 @@
   <span class="brand">OpenAgent 审计台</span>
   <nav>
     <a href="/ui/sessions">会话</a>
-    <a href="/ui/requests">还原审批</a>
-    <a href="/ui/audit-log">审计日志</a>
+    {% if principal and principal.is_admin %}<a href="/ui/audit-log">审计日志</a>{% endif %}
   </nav>
   {% if principal %}
-  <span class="muted">{{ principal.username }} · {{ principal.role }}</span>
-  <form action="/ui/logout" method="post"><button>退出</button></form>
+  <div class="who">
+    <span class="muted">{{ principal.username }}</span>
+    <span class="badge {{ 'admin' if principal.is_admin else 'user' }}">
+      {{ role_labels.get(principal.role, principal.role) }}
+    </span>
+    {% if principal.is_admin %}
+      <form class="inline" action="/ui/admin/logout" method="post"><button>退出管理员</button></form>
+    {% elif principal.can_step_up_to_admin %}
+      <a class="btn" href="/ui/admin/login">登录管理员</a>
+    {% endif %}
+    <form class="inline" action="/ui/logout" method="post"><button>退出</button></form>
+  </div>
   {% endif %}
 </header>
 <div class="wrap">
 {% block content %}{% endblock %}
 </div>
+<footer class="muted" style="max-width:1080px;margin:0 auto 32px;padding:0 24px">
+  时间显示时区：{{ display_zone_label }}（存储与审计记录使用 UTC）
+</footer>
+<div id="toast"></div>
+<script>
+// Clicking a mask asks the server to decrypt that single entity. The server
+// records the action in the append-only audit log before returning the value,
+// so the plaintext never appears anywhere it is not accounted for.
+(function () {
+  var toast = document.getElementById('toast');
+  function show(message) {
+    toast.textContent = message;
+    toast.style.display = 'block';
+    clearTimeout(show._t);
+    show._t = setTimeout(function () { toast.style.display = 'none'; }, 6000);
+  }
+
+  document.addEventListener('click', function (event) {
+    var target = event.target.closest('button.ent-click');
+    if (!target) return;
+    event.preventDefault();
+    target.disabled = true;
+
+    fetch('/v1/reveal/' + encodeURIComponent(target.dataset.entityId), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin'
+    })
+      .then(function (resp) {
+        return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          show('无法查看原文：' + (result.body.detail || '未知错误'));
+          target.disabled = false;
+          return;
+        }
+        var span = document.createElement('span');
+        span.className = 'revealed';
+        span.textContent = result.body.plaintext;
+        target.replaceWith(span);
+      })
+      .catch(function () {
+        show('请求失败，请重试。');
+        target.disabled = false;
+      });
+  });
+})();
+</script>
 </body>
 </html>

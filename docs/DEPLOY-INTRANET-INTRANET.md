@@ -160,7 +160,68 @@ openssl rand -hex 32      # AUDIT_GATEWAY_TOKEN  ← 记下来，第 3 步要用
 | `AUDIT_AGENT_WRITER_PASSWORD` / `AUDIT_API_PASSWORD` / `AUDIT_DECRYPT_PASSWORD` / `AUDIT_RETENTION_PASSWORD` | 四个服务角色，**必须互不相同**（脚本会校验，重复即拒绝启动） |
 | `AUDIT_SERVICE_TOKEN` | audit-api → decrypt-svc |
 | `AUDIT_GATEWAY_TOKEN` | 平台 → 网关，**必须与第 3.3 步一致** |
-| `AUDIT_PRIVATE_KEY_PASSPHRASE` | 第 2.2 步的口令 |
+| `AUDIT_PRIVATE_KEY_PASSPHRASE` | 第 2.2 步的口令；**丢失则历史密文永久不可解** |
+
+#### 身份来源与管理员账号
+
+审计台只有两种身份：普通用户（只看脱敏内容）与管理员（可点击脱敏项查看原文）。
+**审计台不自建用户表**，身份来自 OpenAgent。
+
+| 身份来源 | 何时使用 | 结果 |
+|---|---|---|
+| OpenAgent `/api/v1/agent/me` | 正常路径：浏览器携带平台令牌 | 取平台返回的 `username`/`userId`，一律为 `user` |
+| `AUDIT_USERS` | 本地测试、无平台时 | 配置中的用户名，一律为 `user` |
+| 本地测试账号 `test` | OpenAgent 未传递身份时的兜底 | `test`，标记 `ephemeral` |
+
+平台令牌里声明的任何角色**都会被忽略**——它只能证明"你是谁"，不能授予"能解密"。
+
+**开启平台身份对接**：
+
+```
+AUDIT_AUTH_PROVIDER=http
+AUDIT_AUTH_INTROSPECT_URL=https://agent.monolithicpower.com:444/api/v1/agent/me
+```
+
+> 该地址由 audit-api 容器访问。若走内网直连，用 `http://engine:8083/api/v1/agent/me`
+> 这类容器网络地址更稳妥；外链 HTTPS 且证书不受信时需按第 3.3 步处理 CA。
+
+**测试账号**（OpenAgent 未传身份时用）：
+
+```
+AUDIT_TEST_USERNAME=test
+AUDIT_TEST_PASSWORD=test@1233456
+AUDIT_TEST_SESSION_MINUTES=60
+```
+
+它的限制是硬性的：只能以普通用户浏览，**不能**登录管理员（按钮不显示，直接请求返回
+403 并记为 `ADMIN_LOGIN_REFUSED`），登录 1 小时后自动失效。两个变量留空即完全禁用。
+
+**管理员密码用哈希存储**：
+
+```bash
+python3 scripts/hash_admin_password.py --password '你的管理员密码'
+# 输出形如 pbkdf2_sha256$210000$<salt>$<hash>，填进 AUDIT_ADMIN_PASSWORD_HASH
+```
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `AUDIT_ADMIN_USERNAME` | `admin` | 管理员账号名 |
+| `AUDIT_ADMIN_PASSWORD_HASH` | 空 | **推荐**；与明文二选一，哈希优先 |
+| `AUDIT_ADMIN_PASSWORD` | 空 | 仅本地调试；两者都留空则**完全关闭**管理员登录 |
+| `AUDIT_ADMIN_SESSION_MINUTES` | `5` | 解锁有效期；到期自动退回普通用户 |
+| `AUDIT_ADMIN_COOLDOWN_MINUTES` | `10` | 解锁结束后同账号需等待此时长才能再次登录 |
+| `AUDIT_TEST_USERNAME` / `AUDIT_TEST_PASSWORD` | 空 | 兜底测试账号；留空禁用 |
+| `AUDIT_TEST_SESSION_MINUTES` | `60` | 测试账号会话时长 |
+| `AUDIT_DISPLAY_TIMEZONE` | `Asia/Shanghai` | 页面显示与日期筛选时区；**存储始终为 UTC** |
+
+**审计日志的不可篡改性**：每次揭示先写 `ENTITY_REVEAL_REQUESTED`，解密成功后再写
+`ENTITY_REVEALED`，两条都记下是哪个账号（`session_user`）在什么时间看了哪一条。
+写入失败则**不返回明文**。日志表是 append-only + 哈希链，任何应用角色都没有
+UPDATE/DELETE 权限。
+
+**搜索与分页**：会话列表与审计日志均为每页 10 条、最多 20 页（200 条）。更早的数据
+需用搜索框的条件（时间范围、角色、动作、账号、关键字）定位。日期筛选按
+`AUDIT_DISPLAY_TIMEZONE` 解释。
 
 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` 先留空，第 2.5 步再填。
 
@@ -442,7 +503,7 @@ sudo docker compose --env-file .env stop
 
 ## 6. 上线后仍需人工处理
 
-- `AUDIT_USERS` 里的示例令牌必须换成真实值；`compliance_lead`（可解密）不要广发
+- `AUDIT_USERS` 里的示例令牌必须换成真实值（平台侧下发的访问令牌）；普通用户只看到脱敏内容，管理员权限靠密码解锁而非令牌，因此**不要**把管理员密码发给普通业务人员
 - 保留期、还原 TTL、掩码深度是合规决策，见 `.env` 的 retention 段
 - 平台账号登录 audit-web（token 内省）**尚未实现**，当前用 `AUDIT_AUTH_PROVIDER=static`
 - `deploy/alerting/` 的 Prometheus 规则需接入现有监控；`batches_dropped > 0` 必须告警

@@ -2,25 +2,57 @@
 {% block title %}会话 · OpenAgent 审计台{% endblock %}
 {% block content %}
 <h1>会话</h1>
-<p class="sub">审计默认视图：全部内容为入库掩码，全程不解密。</p>
-{% if not sessions %}
-<div class="card muted">暂无会话。</div>
+<p class="sub">
+  共 {{ total }} 个会话，显示第 {{ page }}/{{ total_pages }} 页（每页 {{ page_size }} 条，最多 {{ max_visible }} 条）。
+  时间均为 {{ display_zone_label }}。搜索可查找更早的数据。
+</p>
+
+<form class="filters" method="get" action="/ui/sessions">
+  <div>
+    <label for="q">关键字</label>
+    <input id="q" name="q" value="{{ q }}" placeholder="会话编号 / 用户 / Agent">
+  </div>
+  <div>
+    <label for="from_ts">开始时间</label>
+    <input id="from_ts" name="from_ts" type="datetime-local" value="{{ from_ts }}">
+  </div>
+  <div>
+    <label for="to_ts">结束时间</label>
+    <input id="to_ts" name="to_ts" type="datetime-local" value="{{ to_ts }}">
+  </div>
+  <div>
+    <label for="agent">Agent</label>
+    <input id="agent" name="agent" value="{{ agent }}" placeholder="如 cs-bot">
+  </div>
+  <div class="actions">
+    <button class="primary" type="submit">搜索</button>
+    <a class="btn" href="/ui/sessions">重置</a>
+  </div>
+</form>
+
+{% if browse_blocked %}
+  <div class="notice">
+    会话数量（{{ total }}）超过 {{ max_visible }} 条。请用上方的搜索条件缩小范围（关键字或时间）。
+  </div>
+{% elif not sessions %}
+  <div class="card"><p class="muted" style="margin:0">没有符合条件的会话。</p></div>
 {% else %}
-<div class="card" style="padding:0">
 <table>
-  <thead><tr><th>会话 ID</th><th>用户</th><th>Agent</th><th>trace 数</th><th>最近活动</th></tr></thead>
+  <thead>
+    <tr><th>会话</th><th>用户</th><th>Agent</th><th>条目</th><th>最近活动 ({{ display_zone_label }})</th></tr>
+  </thead>
   <tbody>
   {% for s in sessions %}
     <tr>
       <td><a href="/ui/sessions/{{ s.session_id }}"><code>{{ s.session_id }}</code></a></td>
-      <td><code>{{ s.user_id }}</code></td>
-      <td>{{ s.agent_tags|join(', ') }}</td>
+      <td><code>{{ s.user_id or '-' }}</code></td>
+      <td>{% for t in s.agent_tags %}<span class="pill mute">{{ t }}</span> {% endfor %}</td>
       <td>{{ s.trace_count }}</td>
-      <td>{{ s.last_ts|tsformat }}</td>
+      <td class="muted">{{ s.last_ts|tsformat }}</td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
-</div>
+{% include "_pager.html" %}
 {% endif %}
 {% endblock %}

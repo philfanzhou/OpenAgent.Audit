@@ -95,6 +95,11 @@ def audit(db) -> AuditLogService:
 
 @pytest.fixture()
 def settings(tmp_path, keypair) -> Settings:
+    """Settings for the two-role model.
+
+    Platform identities are always ordinary users; the administrator account is
+    separate and reached by a step-up login.
+    """
     public_pem, private_pem = keypair
     key_dir = tmp_path / "keys"
     key_dir.mkdir()
@@ -104,11 +109,12 @@ def settings(tmp_path, keypair) -> Settings:
         audit_db_url=f"sqlite:///{(tmp_path / 'audit.db')}",
         service_token="svc-token-123",
         users=(
-            UserEntry("tok-auditor", "alice", "auditor"),
-            UserEntry("tok-lead", "bob", "compliance_lead"),
-            UserEntry("tok-lead2", "carol", "compliance_lead"),
-            UserEntry("tok-dev", "dan", "developer"),
+            UserEntry("tok-alice", "alice", "user"),
+            UserEntry("tok-bob", "bob", "user"),
         ),
+        admin_username="admin",
+        admin_password="admin@123456",
+        admin_session_minutes=30,
         key_provider="local",
         local_private_key_path=str(key_dir / "audit_private_key.pem"),
         local_private_key_passphrase=PASSPHRASE.decode(),
@@ -128,6 +134,34 @@ def api_client(container):
     from fastapi.testclient import TestClient
 
     return TestClient(create_audit_app(container))
+
+
+@pytest.fixture()
+def as_user(api_client):
+    """Sign a browser session in as a platform user; returns the client."""
+
+    def _login(token: str = "tok-alice"):
+        resp = api_client.post("/ui/login", data={"token": token}, follow_redirects=False)
+        assert resp.status_code == 302, resp.text
+        return api_client
+
+    return _login
+
+
+@pytest.fixture()
+def as_admin(api_client, as_user):
+    """Sign in as a user, then step up to administrator."""
+
+    def _login(token: str = "tok-alice", password: str = "admin@123456"):
+        client = as_user(token)
+        resp = client.post(
+            "/ui/admin/login",
+            data={"username": "admin", "password": password},
+            follow_redirects=False,
+        )
+        return client, resp
+
+    return _login
 
 
 @pytest.fixture()

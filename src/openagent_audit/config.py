@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Mapping
 
 
-ROLES = ("auditor", "compliance_lead", "developer")
+# The audit plane has exactly two roles: ordinary staff (masked data only) and
+# an administrator who can reveal originals after a step-up login.
+ROLES = ("user", "admin")
 
 # Masking Gateway defaults (overridable via AUDIT_GATEWAY_* env vars).
 DEFAULT_CONTENT_PREFIXES = (
@@ -51,6 +53,16 @@ class UserEntry:
     def validate(self) -> None:
         if self.role not in ROLES:
             raise ValueError(f"unknown role {self.role!r}; expected one of {ROLES}")
+        # Entries in AUDIT_USERS describe platform identities. They are always
+        # ordinary users: the administrator role is granted only by the
+        # step-up login, never carried by a token, so declaring it here is a
+        # configuration mistake that would quietly hand out decryption.
+        if self.role != "user":
+            raise ValueError(
+                f"AUDIT_USERS entry for {self.username!r} declares role {self.role!r}; "
+                "platform identities are always 'user'. The administrator role is "
+                "granted by the admin login, not by a token."
+            )
 
     def __repr__(self) -> str:
         # The token authenticates the user; never render it.
@@ -77,6 +89,37 @@ class Settings:
     auth_provider: str = "static"
     auth_introspect_url: str = ""
     auth_cache_seconds: float = 60.0
+
+    # Administrator step-up login. The console is used by ordinary staff; the
+    # administrator capability is unlocked by typing these credentials inside a
+    # signed-in session. Store a hash (scripts/hash_admin_password.py) so a
+    # leaked .env does not hand out decryption capability; a plain password is
+    # accepted for local runs and hashed on load.
+    admin_username: str = "admin"
+    admin_password: str = ""
+    admin_password_hash: str = ""
+    # How long an unlock lasts before the session drops back to a normal user.
+    # The console is a decrypt-capable surface, so the window is deliberately
+    # short: 5 minutes.
+    admin_session_minutes: int = 5
+
+    # Display timezone for the console. Audit entries are always stored in UTC
+    # (that is the only unambiguous record), but rendering raw UTC makes a
+    # 13:37 Beijing event look like 05:37. This shifts for display and is
+    # recorded in each page's footer so a reviewer knows what they are reading.
+    display_timezone: str = "Asia/Shanghai"
+
+    # Local test account. Deliberately a fallback for when the platform is not
+    # forwarding an identity: it proves the console renders, and it can never
+    # step up to administrator. Sessions expire after one hour.
+    # Leave either value empty to disable the test login entirely.
+    test_username: str = ""
+    test_password: str = ""
+    test_session_minutes: int = 60
+
+    # After the unlock ends (by timeout or explicit logout) the same account
+    # must wait this long before it may unlock again: 10 minutes.
+    admin_cooldown_minutes: int = 10
 
     # Key custody: "local" (PEM file held only by decrypt-svc) or "kms" (AWS KMS).
     key_provider: str = "local"
@@ -188,6 +231,15 @@ class Settings:
             auth_provider=e.get("AUDIT_AUTH_PROVIDER", "static"),
             auth_introspect_url=e.get("AUDIT_AUTH_INTROSPECT_URL", ""),
             auth_cache_seconds=float(e.get("AUDIT_AUTH_CACHE_SECONDS", "60")),
+            admin_username=e.get("AUDIT_ADMIN_USERNAME", "admin"),
+            admin_password=e.get("AUDIT_ADMIN_PASSWORD", ""),
+            admin_password_hash=e.get("AUDIT_ADMIN_PASSWORD_HASH", ""),
+            admin_session_minutes=int(e.get("AUDIT_ADMIN_SESSION_MINUTES", "5")),
+            admin_cooldown_minutes=int(e.get("AUDIT_ADMIN_COOLDOWN_MINUTES", "10")),
+            test_username=e.get("AUDIT_TEST_USERNAME", ""),
+            test_password=e.get("AUDIT_TEST_PASSWORD", ""),
+            test_session_minutes=int(e.get("AUDIT_TEST_SESSION_MINUTES", "60")),
+            display_timezone=e.get("AUDIT_DISPLAY_TIMEZONE", "Asia/Shanghai"),
             key_provider=e.get("AUDIT_KEY_PROVIDER", "local"),
             local_private_key_path=e.get("AUDIT_PRIVATE_KEY_PATH", ""),
             local_private_key_passphrase=e.get("AUDIT_PRIVATE_KEY_PASSPHRASE", ""),

@@ -48,58 +48,94 @@
 
 audit 平台**不维护用户表**。OpenAgent 平台是用户/角色的唯一来源。
 
-### 1.1 角色模型（固定三种，权限矩阵不可变）
+### 1.1 角色模型（固定两种）
 
-| 审计角色 | 对应权限 | 典型人群 |
+audit 平台只有两种身份，OpenAgent 侧只需要回答"这个人是谁"，不需要映射角色：
+
+| 审计身份 | 权限 | 说明 |
 |---|---|---|
-| `auditor` 审计员 | 掩码会话浏览、审计日志查看 | 合规抽查人员 |
-| `compliance_lead` 合规主管 | 上述 + 还原申请/审批/查看原文 | 争议处理、安全调查 |
-| `developer` 开发者（只读管理员） | 全站只读（会话/还原/审计日志）+ 运行指标；**无任何写/批/还原操作** | 平台开发/运维 |
+| `user` 普通用户 | 浏览会话、查看脱敏内容 | **所有**平台鉴权通过的用户 |
+| `admin` 管理员 | 上述 + 点击脱敏项查看原文 | 在已登录会话内输入管理员密码临时解锁 |
 
-OpenAgent 侧负责把自己的用户映射到这三种角色（如：合规部→compliance_lead）。
-注意：`developer` 虽可读全部掩码数据，但解密仍只能走合规主管的四眼审批流，
-只读权限在结构上无法绕过。
+**关键设计**：管理员权限**不由令牌携带**。内省端点返回的任何角色声明都会被忽略，
+平台用户一律是 `user`；同理 `AUDIT_USERS` 里声明非 `user` 角色会直接启动报错。
+解密能力只能通过"会话内输入管理员密码"获得，因此**即使某人的平台令牌泄露，
+也不等于可以解密审计数据**。
 
-### 1.2 对接方式：OpenAgent 实现 Token 内省（introspection）端点
+管理员解锁策略（可在 audit 侧配置）：
 
-OpenAgent 平台需暴露一个 HTTP 端点，audit 平台用它把访问令牌解析成身份：
+| 设置 | 默认 | 作用 |
+|---|---|---|
+| `AUDIT_ADMIN_SESSION_MINUTES` | 5 | 解锁有效期，到期自动退回普通用户 |
+| `AUDIT_ADMIN_COOLDOWN_MINUTES` | 10 | 解锁结束后同账号需等待此时长才能再次登录 |
+
+**每一次揭示都留痕**：先写 `ENTITY_REVEAL_REQUESTED`，解密成功再写 `ENTITY_REVEALED`，
+记录账号、时间、实体编号以及当时登录的会话用户（`session_user`）。若日志写入失败，
+**不返回明文**。日志为 append-only 哈希链，任何应用角色都无 UPDATE/DELETE 权限。
+
+**本地测试兜底账号**：OpenAgent 尚未转发身份时，可用 `test` / `test@1233456` 进入
+系统，仅用于确认页面正常。它的限制是硬性的：
+
+- 只能是普通用户，**不能**登录管理员（按钮不渲染，直接请求返回 403 并记
+  `ADMIN_LOGIN_REFUSED`）；
+- 登录 1 小时后自动失效（`AUDIT_TEST_SESSION_MINUTES`）；
+- `AUDIT_TEST_USERNAME` / `AUDIT_TEST_PASSWORD` 留空即完全禁用；
+- 该账号名不能与 `AUDIT_ADMIN_USERNAME` 相同，否则按未配置处理。
+
+### 1.2 身份来源：复用 OpenAgent 已有的 `/me` 端点
+
+不需要新写端点。OpenAgent Engine 已提供当前用户查询，直接用它：
 
 ```
-请求
-  GET {AUDIT_AUTH_INTROSPECT_URL}
-  Authorization: Bearer <访问令牌>          # OpenAgent 平台下发的审计访问令牌
+GET {AUDIT_AUTH_INTROSPECT_URL}
+Authorization: Bearer <访问令牌>
 
-响应（三种之一）
-  200 {"username": "zhang.san", "role": "compliance_lead"}   # 成功
-  401 / 403                                                  # 令牌无效或无审计权限
-  （非 200 一律按未认证处理；introspect 服务不可用时同样 fail-closed）
+200  {
+       "userId": "u-123",
+       "username": "zhang.san",
+       "email": "zhang.san@example.com",
+       "tenantId": "corp",
+       "roles": ["user"],
+       "isAuthenticated": true
+     }
+401 / 403                     # 令牌无效
 ```
 
-要求：
-- 响应 `role` 必须是上表三个值之一，其他值会被拒绝；
+audit 侧按 `username` → `userName` → `name` → `userId` → `sub` → `email` 的顺序
+取第一个非空值作为显示名。**响应里的 `role`/`roles` 一律忽略**：平台只能证明
+"你是谁"，不能授予"能解密"。
+
+要点：
+- 非 200 一律按未认证处理；端点不可达时同样 fail-closed；
 - 令牌建议短期有效、可撤销（审计平台有 60s 结果缓存，撤销最迟约 1 分钟生效）；
-- `username` 用工号/账号名，**不要**用手机号、身份证号（它们属于被审计的敏感数据，
+- 显示名用工号/账号名，**不要**用手机号、身份证号（它们属于被审计的敏感数据，
   不应出现在身份字段里）。
 
-### 1.3 audit 平台侧配置（零代码改动）
+### 1.3 audit 平台侧配置
 
 ```bash
 AUDIT_AUTH_PROVIDER=http
-AUDIT_AUTH_INTROSPECT_URL=https://openagent.example.com/api/audit/token-introspect
+# 经容器网络直连 Engine，避免走外链 HTTPS 的证书问题
+AUDIT_AUTH_INTROSPECT_URL=http://engine:8083/api/v1/agent/me
 AUDIT_AUTH_CACHE_SECONDS=60
+
+# 本地测试兜底账号：OpenAgent 未传身份时使用，只能是普通用户
+AUDIT_TEST_USERNAME=test
+AUDIT_TEST_PASSWORD=test@1233456
+AUDIT_TEST_SESSION_MINUTES=60
 ```
 
-代码位置：`src/openagent_audit/services/auth.py`（`HttpIntrospectionAuthenticator`）。
-开发/演示环境用 `AUDIT_AUTH_PROVIDER=static` + `AUDIT_USERS=令牌:用户名:角色,...`。
+代码位置：`src/openagent_audit/services/auth.py`（`IdentityResolver`）。
+平台不可用时用 `AUDIT_AUTH_PROVIDER=static` + `AUDIT_USERS=令牌:用户名:user,...`
+把审计台跑起来（仅限本地）。
 
 ### 1.4 权限不足时的行为
 
 被拒绝的请求返回 `403`，报文为可读的专业提示（含角色、缺失权限、处理建议），
-例如开发者访问会话数据时：
+例如普通用户尝试查看原文时：
 
 ```
-权限不足：当前角色「开发者」（developer）未被授予「审计会话查看（掩码视图）」
-权限（view_masked）。如需相应访问能力，请联系系统管理员调整角色授权。
+权限不足：当前身份「普通用户」没有「查看原文（解密）」权限。查看原文需要管理员登录。
 ```
 
 ---
@@ -344,20 +380,29 @@ OpenAgent 后台/工单系统要嵌审计能力时，直接调 audit-api（同�
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/v1/me` | 任意已认证 | 令牌 → {username, role}（SPA 会话引导） |
-| GET | `/v1/sessions`、`/v1/sessions/{id}` | view_masked | 会话列表 / 掩码 trace（浏览写审计日志） |
-| GET | `/v1/traces?user_id&session_id&from_ts&to_ts` | view_masked | 检索仅限这三个维度（无敏感值反查） |
-| GET | `/v1/audit-log?verify=true` | view_audit_log | 审计日志 + 哈希链校验 |
-| POST | `/v1/restore-requests` | manage_restore | 提交还原申请（必填理由） |
-| POST | `/v1/restore-requests/{id}/approve` `/reject` | manage_restore | 四眼审批（申请人不能自批） |
-| POST | `/v1/restore-requests/{id}/reveal` | manage_restore | 查看原文（TTL 内，默认 5 分钟，全程留痕） |
-| GET | `/internal/metrics`（`/prometheus`） | view_metrics | 运行指标（仅 developer） |
+| GET | `/v1/me` | 任意已认证 | 令牌 → `{username, role, is_admin}`（SPA 会话引导） |
+| GET | `/v1/sessions?q&from_ts&to_ts&agent&page` | view_masked | 会话列表；每页 10 条、最多 20 页（200 条），更早数据需用筛选 |
+| GET | `/v1/sessions/{id}` | view_masked | 掩码 trace（浏览本身写审计日志） |
+| GET | `/v1/traces?user_id&session_id&from_ts&to_ts` | view_masked | 检索限这三个维度（无敏感值反查） |
+| GET | `/v1/audit-log?q&from_ts&to_ts&role&action&page&verify` | view_audit_log | 审计日志 + 哈希链校验；分页同上 |
+| POST | `/v1/reveal/{entity_id}` | **reveal（管理员）** | 解密单个实体查看原文；先写日志再返回明文 |
+| POST | `/v1/admin/login` | 已登录会话 | 输入管理员密码解锁（有效期见 1.1） |
+| POST | `/v1/admin/logout` | 管理员 | 立即退出管理员，并开始冷却计时 |
+| GET | `/internal/metrics`（`/prometheus`） | view_metrics | 运行指标（仅管理员） |
 
-错误约定：`401` 令牌无效；`403` 权限不足（返回专业中文提示，见 1.4）；
-`410` 还原查看窗口过期（需重新申请审批）。
+错误约定：`401` 令牌无效或未登录；`403` 权限不足（返回专业中文提示，见 1.4）；
+`404` 会话/实体不存在；`422` 解密失败或参数格式错误；
+`429` 管理员登录处于冷却期（响应体含剩余等待时间）。
 
-前端 `frontend/`（Vue3 + Tailwind）即这组接口的完整参考实现，可整站内嵌
-（iframe 或改造）进 OpenAgent 平台。
+**分页约定**：`page_size` 固定按 10 处理（传入更大值会被压到 10），`page` 上限 20。
+响应包含 `total`、`total_pages`、`max_visible` 与 `truncated`；`truncated=true`
+表示还有更早的数据，必须用筛选条件才能取到。
+
+**时间约定**：`from_ts`/`to_ts` 按 `AUDIT_DISPLAY_TIMEZONE` 解释（默认东八区）；
+返回的 `ts` 是 UTC，`ts_display` 是本地时间。
+
+audit-web 的页面（服务端渲染，见 `services/templates/`）即这组接口的参考实现，
+可用 iframe 或改造为内嵌页面接入 OpenAgent 平台。
 
 ## 4. 常见问题
 
