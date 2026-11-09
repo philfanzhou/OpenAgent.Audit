@@ -68,9 +68,11 @@ class TestLocalTraceStore:
 class TestLangfuseTraceStore:
     def test_list_and_delete_via_mock_api(self):
         captured: dict = {"get_paths": [], "deletes": []}
+        # v2 observations: two traces, one observation each. The store groups
+        # them by traceId and reconstructs the legacy trace shape.
         remaining = [
-            {"id": "t-1", "timestamp": "2026-10-20T10:00:00Z"},
-            {"id": "t-2", "timestamp": "2026-10-20T10:01:00Z"},
+            {"id": "obs-1", "traceId": "t-1", "startTime": "2026-10-20T10:00:00Z"},
+            {"id": "obs-2", "traceId": "t-2", "startTime": "2026-10-20T10:01:00Z"},
         ]
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -78,15 +80,11 @@ class TestLangfuseTraceStore:
                 captured["get_paths"].append(request.url.path)
                 captured["params"] = dict(request.url.params)
                 captured["auth"] = request.headers.get("Authorization")
-                # Only page 1 carries rows; page 2 is empty and terminates the
-                # crawl. Modelling pagination matters because the store now
-                # pages until it sees an empty page.
-                page = int(request.url.params.get("page", "1"))
-                data = list(remaining) if page == 1 else []
-                return httpx.Response(200, json={"data": data})
+                # No cursor returned -> terminates the crawl after one page.
+                return httpx.Response(200, json={"data": list(remaining), "meta": {}})
             captured["deletes"].append(request.url.path)
             deleted_id = request.url.path.rsplit("/", 1)[-1]
-            remaining[:] = [r for r in remaining if r["id"] != deleted_id]
+            remaining[:] = [r for r in remaining if r["traceId"] != deleted_id]
             return httpx.Response(204)
 
         transport = httpx.MockTransport(handler)
@@ -95,55 +93,55 @@ class TestLangfuseTraceStore:
 
         rows = store.list_traces(session_id="s1", user_id="u1", with_observations=False)
         assert [r.trace_id for r in rows] == ["t-1", "t-2"]
-        assert captured["get_paths"][0] == "/api/public/traces"
+        assert captured["get_paths"][0] == "/api/public/v2/observations"
         assert captured["params"]["sessionId"] == "s1"
         assert captured["params"]["userId"] == "u1"
         assert captured["auth"].startswith("Basic ")
 
         deleted = store.delete_older_than(NOW)
         assert sorted(deleted) == ["t-1", "t-2"]
-        # paged to exhaustion rather than stopping after the first page
+        # both traces deleted (paged to exhaustion rather than stopping early)
         assert len(captured["deletes"]) == 2
 
     def test_list_trace_dicts_returns_raw_rows(self):
         def handler(request: httpx.Request) -> httpx.Response:
-            page = int(request.url.params.get("page", "1"))
-            # page 1 holds the row, page 2 is empty and ends the crawl
-            data = [{"id": "t-1", "extra": 1}] if page == 1 else []
-            return httpx.Response(200, json={"data": data})
+            # One observation -> one reconstructed trace dict with id=t-1.
+            data = [{"id": "obs-1", "traceId": "t-1"}]
+            return httpx.Response(200, json={"data": data, "meta": {}})
 
         client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
         )
         store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
-        assert store.list_trace_dicts() == [{"id": "t-1", "extra": 1}]
+        rows = store.list_trace_dicts()
+        assert len(rows) == 1
+        assert rows[0]["id"] == "t-1"
+        assert rows[0]["traceId"] == "t-1"
 
     def test_session_detail_renders_through_audit_api(self):
         """Production mode (AUDIT_TRACE_STORE=langfuse) must serve the session
-        detail page: Langfuse rows are normalised into TraceRecord, so
+        detail page: v2 observation rows are normalised into TraceRecord, so
         audit_api._trace_dict never meets a raw API dict."""
 
         def handler(request: httpx.Request) -> httpx.Response:
-            page = int(request.url.params.get("page", "1"))
+            # v2 returns the observation inline (io/model/usage fields).
             data = [{
-                "id": "t-1",
+                "id": "obs-1",
+                "traceId": "t-1",
                 "sessionId": "sess-1",
                 "userId": "usr_1",
-                "name": "POST /api/v1/agent/chat",
-                "timestamp": "2026-10-20T10:00:00Z",
+                "traceName": "POST /api/v1/agent/chat",
+                "startTime": "2026-10-20T10:00:00Z",
+                "type": "GENERATION",
+                "name": "chat",
                 "tags": ["agent:cs-bot"],
-                "observations": [{
-                    "id": "obs-1",
-                    "type": "GENERATION",
-                    "name": "chat",
-                    "input": {"messages": [{"role": "user",
-                                            "content": "电话 ⟦PHONE_NUMBER#ab|138****5678⟧"}]},
-                    "output": {"choices": [{"message": {"content": "好的"}}]},
-                    "model": "glm-4",
-                    "usage": {"input": 10, "output": 5},
-                }],
-            }] if page == 1 else []
-            return httpx.Response(200, json={"data": data})
+                "input": {"messages": [{"role": "user",
+                                        "content": "电话 ⟦PHONE_NUMBER#ab|138****5678⟧"}]},
+                "output": {"choices": [{"message": {"content": "好的"}}]},
+                "model": "glm-4",
+                "usageDetails": {"input": 10, "output": 5},
+            }]
+            return httpx.Response(200, json={"data": data, "meta": {}})
 
         client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
@@ -177,48 +175,62 @@ class TestLangfuseTraceStore:
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured["params"] = dict(request.url.params)
-            return httpx.Response(200, json={"data": []})
+            return httpx.Response(200, json={"data": [], "meta": {}})
 
         client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
         )
         store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
         store.list_traces(from_ts=NOW - timedelta(minutes=1), to_ts=NOW)
-        assert "fromTimestamp" in captured["params"]
-        assert "toTimestamp" in captured["params"]
+        # v2 uses fromStartTime/toStartTime (not fromTimestamp/toTimestamp)
+        assert "fromStartTime" in captured["params"]
+        assert "toStartTime" in captured["params"]
 
     def test_list_sessions_aggregates_and_paginates(self):
-        """list_sessions aggregates the paged traces API into session rows."""
+        """list_sessions aggregates the cursor-paged v2 observations API into
+        session rows. v2 keeps returning a cursor until the end, even across
+        empty pages, so we must follow the cursor (not terminate on a short
+        page)."""
+        # page 1: 100 bulk observations (each its own trace/session) + 2 for s1
         page1 = [
-            {"id": f"b{i}", "sessionId": f"bulk-{i}", "userId": "u0", "timestamp": None, "tags": []}
-            for i in range(100)  # full page -> loop continues
+            {"id": f"obs-b{i}", "traceId": f"b{i}", "sessionId": f"bulk-{i}",
+             "userId": "u0", "startTime": None, "tags": []}
+            for i in range(100)
         ] + [
-            {"id": "t1", "sessionId": "s1", "userId": "u1", "timestamp": "2026-10-20T10:00:00Z",
-             "tags": ["agent:cs-bot"]},
-            {"id": "t2", "sessionId": "s1", "userId": "u1", "timestamp": "2026-10-20T10:05:00Z",
-             "tags": "agent:cs-bot"},
+            {"id": "obs-t1", "traceId": "t1", "sessionId": "s1", "userId": "u1",
+             "startTime": "2026-10-20T10:00:00Z", "tags": ["agent:cs-bot"]},
+            {"id": "obs-t2", "traceId": "t2", "sessionId": "s1", "userId": "u1",
+             "startTime": "2026-10-20T10:05:00Z", "tags": "agent:cs-bot"},
         ]
-        pages = [page1, [
-            {"id": "t3", "sessionId": "s2", "userId": "u2", "timestamp": "2026-10-20T11:00:00Z",
-             "tags": []},
-        ]]  # short page -> last page
-        pages_seen = []
+        # page 2: one observation for s2, plus a cursor to page 3
+        page2 = [
+            {"id": "obs-t3", "traceId": "t3", "sessionId": "s2", "userId": "u2",
+             "startTime": "2026-10-20T11:00:00Z", "tags": []},
+        ]
+        # page 3: empty data but still carries a cursor (v4 can do this); the
+        # store must keep paging. page 4: empty, no cursor -> end.
+        pages = [
+            (page1, "cursor-after-1"),
+            (page2, "cursor-after-2"),
+            ([], "cursor-after-3"),
+            ([], None),
+        ]
+        seen_cursors: list[str | None] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
-            page = int(request.url.params.get("page", "1"))
-            pages_seen.append(page)
-            data = pages[page - 1] if page <= len(pages) else []
-            return httpx.Response(200, json={"data": data})
+            cursor = request.url.params.get("cursor")
+            seen_cursors.append(cursor)
+            idx = 0 if cursor is None else min(int(cursor.split("-")[-1]), len(pages) - 1)
+            data, next_cursor = pages[idx]
+            return httpx.Response(200, json={"data": data, "meta": {"cursor": next_cursor}})
 
         client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url="https://lf.example", auth=("pk", "sk")
         )
         store = LangfuseTraceStore("https://lf.example", "pk", "sk", client=client)
         rows = store.list_sessions()
-        # pages 1-2 carry data; page 3 is the empty page that proves the end
-        # (terminating on a "short page" would stop early when a server caps
-        # page size below the requested limit).
-        assert pages_seen == [1, 2, 3]
+        # 4 requests: initial (no cursor) + 3 follow-ups
+        assert len(seen_cursors) == 4
         assert len(rows) == 102  # 100 bulk + s1 + s2
         by_id = {r["session_id"]: r for r in rows}
         assert by_id["s1"]["trace_count"] == 2
