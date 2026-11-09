@@ -30,11 +30,19 @@ def _client(handler) -> httpx.Client:
 
 
 class _PagedLangfuse:
-    """Minimal Langfuse mock with real pagination semantics."""
+    """Minimal Langfuse v2 mock with real cursor-pagination semantics.
+
+    Each row is one observation; the store groups them by ``traceId`` on the
+    client side. We model the cursor as an integer offset into the row list so
+    the test can assert how many requests were issued.
+    """
 
     def __init__(self, total: int, page_limit: int = 50):
+        # One observation per trace (good enough for the pagination tests,
+        # which only care about counts and that every page is consumed).
         self.rows = [
-            {"id": f"t-{i:04d}", "sessionId": f"s-{i}", "userId": "u", "timestamp": None}
+            {"id": f"obs-{i:04d}", "traceId": f"t-{i:04d}", "sessionId": f"s-{i}",
+             "userId": "u", "startTime": None}
             for i in range(total)
         ]
         self.page_limit = page_limit
@@ -43,28 +51,28 @@ class _PagedLangfuse:
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.method == "DELETE":
             target = request.url.path.rsplit("/", 1)[-1]
-            self.rows = [r for r in self.rows if r["id"] != target]
+            self.rows = [r for r in self.rows if r["traceId"] != target]
             return httpx.Response(204)
 
-        # Detail endpoint: /api/public/traces/<id> -> a single trace object.
-        # Returning a list envelope here (as a naive mock does) would make the
-        # detail lookup look empty and loop the caller.
-        path = request.url.path.rstrip("/")
-        if path != "/api/public/traces":
-            trace_id = path.rsplit("/", 1)[-1]
-            match = next((r for r in self.rows if r["id"] == trace_id), None)
-            if match is None:
-                return httpx.Response(404)
-            return httpx.Response(200, json={**match, "observations": []})
+        # v2 observations endpoint only.
+        if request.url.path.rstrip("/") != "/api/public/v2/observations":
+            return httpx.Response(404)
 
         self.page_requests += 1
-        page = int(request.url.params.get("page", "1"))
         requested = int(request.url.params.get("limit", str(self.page_limit)))
         size = min(requested, self.page_limit)
-        start = (page - 1) * size
-        data = self.rows[start : start + size]
-        # An empty page is the only unambiguous end-of-list signal.
-        return httpx.Response(200, json={"data": data})
+        # Cursor is the offset into the row list (encoded as "off-<n>"); the
+        # initial request has no cursor.
+        cursor = request.url.params.get("cursor")
+        offset = 0 if not cursor else int(cursor.split("-")[-1])
+        data = self.rows[offset : offset + size]
+        next_offset = offset + len(data)
+        # Return a cursor only when more rows remain. An empty data page with
+        # no cursor is the unambiguous end signal.
+        meta: dict = {}
+        if next_offset < len(self.rows):
+            meta["cursor"] = f"off-{next_offset}"
+        return httpx.Response(200, json={"data": data, "meta": meta})
 
 
 class TestTracePagination:
@@ -75,16 +83,14 @@ class TestTracePagination:
         rows = store.list_trace_dicts(max_pages=None)
 
         assert len(rows) == 125, f"only retrieved {len(rows)} rows"
-        # 50+50+25 rows, then one empty page to prove the end was reached
-        # (terminating on "short page" would stop at request 1 when the server
-        # caps page size below the requested limit).
-        assert mock.page_requests == 4
+        # 50+50+25 rows across 3 requests; the last page returns no cursor.
+        assert mock.page_requests == 3
 
     def test_list_traces_includes_every_page(self):
         mock = _PagedLangfuse(total=125, page_limit=50)
         # give the rows timestamps, otherwise they are not renderable as traces
         for i, row in enumerate(mock.rows):
-            row["timestamp"] = f"2026-10-20T10:{i // 60:02d}:{i % 60:02d}Z"
+            row["startTime"] = f"2026-10-20T10:{i // 60:02d}:{i % 60:02d}Z"
         store = LangfuseTraceStore("https://x", "pk", "sk", client=_client(mock.handler))
 
         records = store.list_traces(with_observations=False)
@@ -108,7 +114,8 @@ class TestTracePagination:
         assert mock.page_requests == 1
 
     def test_session_crawl_is_not_silently_capped_at_10k(self):
-        """100 pages x 100 rows used to be a hard cap, hiding sessions beyond it."""
+        """A hard page cap used to hide sessions beyond it. v2 cursor
+        pagination must follow the cursor to the end."""
         mock = _PagedLangfuse(total=10_050, page_limit=100)
         store = LangfuseTraceStore("https://x", "pk", "sk", client=_client(mock.handler))
 
@@ -118,30 +125,20 @@ class TestTracePagination:
 
 
 class TestObservationContract:
-    def test_detail_is_fetched_when_list_returns_bare_ids(self):
-        """The list endpoint returns observation *ids*, not bodies; the old
-        code skipped strings and produced an empty session page."""
+    def test_v2_returns_observation_bodies_inline(self):
+        """v2 returns observation bodies inline (io/model/usage fields), so
+        ``with_observations=True`` needs no per-trace detail round trip."""
 
         def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/api/public/traces":
-                # page 1 holds the trace; page 2 is empty, ending the crawl
-                page = int(request.url.params.get("page", "1"))
-                data = [{
-                    "id": "t-1", "sessionId": "s-1", "userId": "u",
-                    "timestamp": "2026-10-20T10:00:00Z",
-                    "observations": ["obs-1", "obs-2"],
-                }] if page == 1 else []
-                return httpx.Response(200, json={"data": data})
-            return httpx.Response(200, json={
-                "id": "t-1", "sessionId": "s-1", "userId": "u",
-                "timestamp": "2026-10-20T10:00:00Z",
-                "observations": [
-                    {"id": "obs-1", "type": "span", "name": "接收请求",
-                     "input": {"text": "⟦PHONE_NUMBER#ab|138****5678⟧"}},
-                    {"id": "obs-2", "type": "generation", "name": "LLM",
-                     "output": {"text": "好的"}},
-                ],
-            })
+            data = [
+                {"id": "obs-1", "traceId": "t-1", "sessionId": "s-1", "userId": "u",
+                 "startTime": "2026-10-20T10:00:00Z", "type": "span", "name": "接收请求",
+                 "input": {"text": "⟦PHONE_NUMBER#ab|138****5678⟧"}},
+                {"id": "obs-2", "traceId": "t-1", "sessionId": "s-1", "userId": "u",
+                 "startTime": "2026-10-20T10:00:01Z", "type": "GENERATION", "name": "LLM",
+                 "output": {"text": "好的"}},
+            ]
+            return httpx.Response(200, json={"data": data, "meta": {}})
 
         store = LangfuseTraceStore("https://x", "pk", "sk", client=_client(handler))
         (record,) = store.list_traces(with_observations=True)
@@ -151,21 +148,15 @@ class TestObservationContract:
         assert "⟦PHONE_NUMBER#ab|138****5678⟧" in str(record.observations[0].input)
 
     def test_detail_failure_does_not_blank_the_page(self):
+        """If the v2 endpoint errors mid-crawl, the store surfaces the error
+        rather than silently returning partial data."""
+
         def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/api/public/traces":
-                page = int(request.url.params.get("page", "1"))
-                data = [{
-                    "id": "t-1", "sessionId": "s-1", "userId": "u",
-                    "timestamp": "2026-10-20T10:00:00Z", "observations": ["obs-1"],
-                }] if page == 1 else []
-                return httpx.Response(200, json={"data": data})
             return httpx.Response(500)
 
         store = LangfuseTraceStore("https://x", "pk", "sk", client=_client(handler))
-        (record,) = store.list_traces(with_observations=True)
-        # the trace itself survives, just without observation bodies
-        assert record.trace_id == "t-1"
-        assert record.observations == ()
+        with pytest.raises(Exception):
+            store.list_traces(with_observations=True)
 
 
 # ---------------------------------------------------------------------------
