@@ -129,43 +129,27 @@ AUDIT_TEST_SESSION_MINUTES=60
 平台不可用时用 `AUDIT_AUTH_PROVIDER=static` + `AUDIT_USERS=令牌:用户名:user,...`
 把审计台跑起来（仅限本地）。
 
-### 1.3.1 OpenAgent 侧如何让用户"直接进"审计台
+### 1.3.1 登录方式：公司 SSO（不再依赖 OpenAgent 跳转）
 
-audit 提供免输入入口，OpenAgent 前端只需在跳转时带上当前用户的令牌：
+审计台接入**公司 SSO**（OIDC Authorization Code + PKCE），与 OpenAgent
+工作台的企业登录同源。用户打开审计台登录页，点「用企业账号登录」跳转 SSO，
+用域账号登录后自动回到审计台——OpenAgent 前端**不需要任何配合改动**。
 
-```
-{审计台地址}/ui/login?token={当前用户的 OpenAgent 访问令牌}
-```
+审计台需要的配置（向 SSO 管理员申请）：
 
-审计台的处理：校验令牌 → 调 `AUDIT_AUTH_INTROSPECT_URL` 确认真实身份 →
-建立会话 Cookie → 302 跳转到 `/ui/sessions`。用户不需要看到任何登录表单。
-
-| 行为 | 结果 |
+| 配置 | 说明 |
 |---|---|
-| 令牌有效 | 直接进入，审计日志记为该用户在何时登录（`via=url-token`） |
-| 令牌无效 / 平台不可达 | 停在登录页并提示原因，**不重定向循环**，仍可用测试账号进入 |
-| 登录成功后 | 令牌**不写入页面**，仅保存为会话 Cookie |
-| 自动登录后 | **不获得**管理员权限；看原文仍需单独输入管理员密码（5 分钟有效） |
+| `AUDIT_SSO_AUTHORITY` | SSO 服务地址 |
+| `AUDIT_SSO_CLIENT_ID` / `AUDIT_SSO_CLIENT_SECRET` | 为审计台注册的 client |
+| 回调地址 | `http://<审计台地址>/ui/login/sso/callback`（需在 SSO 登记该地址）|
+| `AUDIT_SSO_STATE_SECRET` | 建议 `openssl rand -base64 32` 生成，使进行中的登录在重启后仍有效 |
 
-反向代理与安全提示：
+审计台从 SSO 的 userinfo 端点获取 `preferred_username` 作为审计身份，
+一律映射为普通用户 `user`；查看原文仍需管理员 step-up 密码。
+test 测试账号保留作为 SSO 故障时的应急入口。
 
-- 令牌在 URL 查询串里，会进入浏览器历史与代理访问日志。若这不可接受，可改为前端
-  先 `POST /ui/login`（表单方式）把令牌放在请求体里，不要放进 URL；
-- 建议审计台与 OpenAgent 同属内网、通过 HTTPS 或容器内网访问；
-- 令牌应短期有效并可撤销（audit 侧有 60 秒缓存，撤销最迟约 1 分钟生效）。
-
-**前端已实现**：`OpenAgent-Frontend` 仓库的工作台设置新增了「会话审计」页
-（`src/features/audit/`）。它读取当前标签页 `sessionStorage` 中已有的
-`openagent.auth.access-token`，新开标签页访问上面的 URL 即完成自动登录。
-
-- 审计台地址默认取工作台主机的 `:8100`，可在页面内修改，或用
-  `VITE_OPENAGENT_AUDIT_BASE_URL` 构建预置；
-- 未登录时只提示、不跳转；
-- 该入口只能进入普通视图，管理员登录仍需在审计台内单独完成。
-
-因此部署时 audit 侧只需配好 `AUDIT_AUTH_PROVIDER=http` 与
-`AUDIT_AUTH_INTROSPECT_URL`，无需再改前端代码。
-
+> 注：OpenAgent 工作台的「会话审计」跳转入口已从工作台移除。
+> 数据对接（trace 推送到掩码网关）与登录无关，不受影响。
 ### 1.4 权限不足时的行为
 
 被拒绝的请求返回 `403`，报文为可读的专业提示（含角色、缺失权限、处理建议），

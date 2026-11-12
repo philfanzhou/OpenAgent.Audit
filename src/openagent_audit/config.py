@@ -121,6 +121,19 @@ class Settings:
     # must wait this long before it may unlock again: 10 minutes.
     admin_cooldown_minutes: int = 10
 
+    # Enterprise SSO login (OIDC Authorization Code + PKCE). Enabled by
+    # supplying authority, client id and client secret; the secret is a
+    # deployment secret and must come from the environment, not this file.
+    # Disabled entirely when client id or secret is empty, in which case the
+    # console falls back to the local test account.
+    sso_authority: str = ""
+    sso_client_id: str = ""
+    sso_client_secret: str = ""
+    sso_scopes: str = "openid profile email"
+    # Override only when the callback address cannot be derived from the
+    # request (for example behind a proxy that rewrites the host).
+    sso_redirect_uri: str = ""
+
     # Key custody: "local" (PEM file held only by decrypt-svc) or "kms" (AWS KMS).
     key_provider: str = "local"
     local_private_key_path: str = ""
@@ -236,6 +249,11 @@ class Settings:
             admin_password_hash=e.get("AUDIT_ADMIN_PASSWORD_HASH", ""),
             admin_session_minutes=int(e.get("AUDIT_ADMIN_SESSION_MINUTES", "5")),
             admin_cooldown_minutes=int(e.get("AUDIT_ADMIN_COOLDOWN_MINUTES", "10")),
+            sso_authority=e.get("AUDIT_SSO_AUTHORITY", ""),
+            sso_client_id=e.get("AUDIT_SSO_CLIENT_ID", ""),
+            sso_client_secret=e.get("AUDIT_SSO_CLIENT_SECRET", ""),
+            sso_scopes=e.get("AUDIT_SSO_SCOPES", "openid profile email"),
+            sso_redirect_uri=e.get("AUDIT_SSO_REDIRECT_URI", ""),
             test_username=e.get("AUDIT_TEST_USERNAME", ""),
             test_password=e.get("AUDIT_TEST_PASSWORD", ""),
             test_session_minutes=int(e.get("AUDIT_TEST_SESSION_MINUTES", "60")),

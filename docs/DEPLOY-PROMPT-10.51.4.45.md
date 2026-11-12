@@ -79,7 +79,7 @@ df -h /opt /var/lib/docker
 # 3.1 拉取两个仓库
 cd ~
 git clone https://github.com/philfanzhou/OpenAgent.Audit.git
-cd OpenAgent.Audit && git log --oneline -1     # 确认是 173b5fa 或更新
+cd OpenAgent.Audit && git log --oneline -1     # 确认是 28d19cf 或更新
 
 cd ~
 git clone https://github.com/philfanzhou/OpenAgent.git
@@ -210,25 +210,19 @@ AUDIT_AUTH_INTROSPECT_URL=http://engine:8083/api/v1/agent/me
 
 > ⚠️ `.env` 里**不要写行内注释**。`KEY=value  # 说明` 会把注释当成值的一部分。
 
-**OpenAgent 用户自动登录 audit**（推荐，需要 OpenAgent 前端配合一处小改动）：
-
-OpenAgent 前端在跳转审计台时带上当前用户令牌即可，用户无需输入任何东西：
+**登录对接公司 SSO**（如已申请，按 SSO 管理员提供的值填写）：
 
 ```
-http://10.51.4.45:8100/ui/login?token={当前用户的 OpenAgent 访问令牌}
+AUDIT_SSO_AUTHORITY=<SSO 管理员提供>
+AUDIT_SSO_CLIENT_ID=openagent-audit
+AUDIT_SSO_CLIENT_SECRET=<SSO 管理员提供>
+AUDIT_SSO_STATE_SECRET=<openssl rand -base64 32 生成>
 ```
 
-**前端已实现，无需改代码**：`OpenAgent-Frontend` 仓库的工作台设置里已有
-「会话审计」页（`src/features/audit/`），会自动读取当前登录令牌并按上面格式跳转。
+并让 SSO 管理员登记回调地址 `http://10.51.4.45:8100/ui/login/sso/callback`。
 
-部署时只需确认两件事：
-
-1. 前端已部署到包含该功能的版本（2026-11 之后构建）；
-2. 用户能在工作台设置 → 会话审计里看到并打开审计台，且**不需要输入密码**。
-
-若打开后停在审计台登录页，说明 audit 侧的 `AUDIT_AUTH_PROVIDER` /
-`AUDIT_AUTH_INTROSPECT_URL` 没配对，或 audit-api 无法访问 Engine 的 `/me`。
-此时仍可用测试账号进入，但请在报告中注明自动登录未生效。
+**这一项不是部署必需**：未配置 SSO 时，用测试账号 `test` 登录仍可正常使用审计台。
+若本次不申请 SSO，请在最终报告中注明"SSO 未对接，当前用测试账号登录"。
 
 ### 4.4 启动
 
@@ -459,7 +453,7 @@ sudo docker compose --env-file .env stop
 | `unable to prepare context: path ".../Backend/src/..."` | 用了拆分前的旧脚本 | 确认已拉最新代码 |
 | `warning: Frontend/OpenAgent.Chat/Dockerfile not found` | 前端在独立仓库 | 正常，后端照常构建 |
 | audit-web 会话页 500 | `LANGFUSE_*` 为空 | 完成 4.5 后重启 `audit-api` |
-| 测试账号登录后仍能看到「登录管理员」 | 代码不是最新版 | 确认 audit 提交为 `173b5fa` 或更新 |
+| 测试账号登录后仍能看到「登录管理员」 | 代码不是最新版 | 确认 audit 提交为 `28d19cf` 或更新 |
 
 ---
 
@@ -473,7 +467,7 @@ sudo docker compose --env-file .env stop
 - [ ] OpenAgent health 全部 200，外链 `https://agent.monolithicpower.com:444/health` 为 200
 - [ ] `forwarded_batches` 有增长且 `batches_dropped` 为 0
 - [ ] 审计台能看到真实会话，且内容是脱敏的
-- [ ] 在工作台设置 → 会话审计 → 打开审计台，**不需要输入密码**即可进入（自动登录生效）
+- [ ] 若配置了 SSO：登录页出现「用企业账号登录」且登录后自动返回审计台；若未配置：test 账号可登录
 - [ ] 审计台里**没有**演示数据（会话编号不以 `sess-demo-` 开头）；若有，说明真实数据已到但演示数据未清除，立即报告
 - [ ] 管理员登录后可查看原文，审计日志有对应记录
 - [ ] 备份文件路径已记录

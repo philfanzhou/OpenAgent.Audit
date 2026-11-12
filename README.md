@@ -42,24 +42,36 @@ a role claim in the token never grants the administrator capability here.
 
 ### Getting in
 
+The console signs users in through the **company SSO** (OIDC Authorization
+Code + PKCE) — the same identity provider the OpenAgent workbench uses. One
+click, no credentials typed into the console itself:
+
+```
+登录页 → 用企业账号登录 → 公司 SSO 登录页 → 自动回到审计台会话列表
+```
+
 | Path | How | Result |
 |---|---|---|
-| **Automatic** | OpenAgent links to `/ui/login?token=<访问令牌>` | Signed in immediately, attributed to that user. This is the normal way in |
-| Manual token | Paste a token into the first form | Same, without the redirect |
-| Test account | Second form: `test` / `test@123456` | Ordinary user, one-hour session, cannot become admin |
+| **Enterprise SSO** | `用企业账号登录` button | Signed in as that domain account; audit entries carry the real user |
+| Test account | Collapsed form: `test` / `test@123456` | Ordinary user, one-hour session, cannot become admin — the fallback when SSO is down |
 
-The two forms are deliberately independent: an earlier layout nested the
-test-account fields inside a collapsed `<details>` block beside the token
-field, and a collapsed block can leave its inputs out of the submission — a
-correct test login then arrived empty and the page answered "please enter a
-token or test credentials". They are now separate forms, and errors name the
-actual problem (missing password, wrong password, test account disabled).
+Configuration (deployment-side; the console is inert without it):
 
-To wire the automatic path, have OpenAgent redirect users to
-`{审计台}/ui/login?token={访问令牌}`. The token is exchanged once for a session
-cookie and never rendered into the page. An invalid token falls back to the
-forms rather than redirect-looping.
+| Setting | Purpose |
+|---|---|
+| `AUDIT_SSO_AUTHORITY` | The SSO base address (discovery is read from it) |
+| `AUDIT_SSO_CLIENT_ID` / `AUDIT_SSO_CLIENT_SECRET` | The registered audit client |
+| `AUDIT_SSO_SCOPES` | Defaults to `openid profile email` |
+| `AUDIT_SSO_REDIRECT_URI` | Override only behind a rewriting proxy; default is `<host>/ui/login/sso/callback` |
+| `AUDIT_SSO_STATE_SECRET` | Optional; makes in-flight logins survive a restart |
 
+The callback address must be registered with the SSO admin:
+`http://<审计台地址>/ui/login/sso/callback`.
+
+The login flow trusts only what the SSO vouches for: after the code exchange
+the console asks the SSO's userinfo endpoint who signed in, and the answered
+`preferred_username` becomes the audit identity (an ordinary `user`). Roles
+in the token are ignored — decryption stays behind the administrator step-up.
 ### The local test account
 
 `test` / `test@123456` exists so somebody can confirm the console renders when

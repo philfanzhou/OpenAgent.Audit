@@ -21,6 +21,9 @@ dependencies = [
   # missing, so the entire audit-api app fails to build — it is a real
   # runtime dependency, not an optional convenience.
   "python-multipart>=0.0.9",
+  # OIDC Authorization Code + PKCE login against the company SSO.
+  "authlib>=1.3",
+  "itsdangerous>=2.1",
 ]
 
 [project.optional-dependencies]
@@ -44,3 +47,4 @@ openagent_audit = ["services/templates/*.html"]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
+asyncio_mode = "auto"
