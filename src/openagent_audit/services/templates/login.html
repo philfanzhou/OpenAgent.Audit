@@ -6,29 +6,26 @@
     <h1>进入审计台</h1>
     <p class="sub">会话内容以脱敏形式展示。查看原文需要管理员登录。</p>
 
-    {# Primary path: OpenAgent hands the token over and this page signs the
-       user in automatically. The form below stays for pasting a token by hand. #}
-    <form action="/ui/login" method="post">
-      <label for="token">OpenAgent 令牌</label>
-      <input id="token" name="token" autocomplete="off" autofocus
-             placeholder="由 OpenAgent 平台下发">
-      <p class="muted" style="margin:6px 0 0">
-        从 OpenAgent 平台跳转进来时会自动带上；直接打开本页则需手动粘贴。
+    {% if sso_enabled %}
+    {# Primary path: the company SSO. One click, no credentials typed here. #}
+    <div style="margin-bottom:22px">
+      <a class="btn primary" href="/ui/login/sso/start"
+         style="display:block;text-align:center;padding:9px 14px;text-decoration:none">
+        用企业账号登录
+      </a>
+      <p class="muted" style="margin:8px 0 0">
+        跳转到公司统一登录，验证后自动返回审计台。
       </p>
-      <div style="margin-top:12px">
-        <button class="primary" type="submit">用令牌登录</button>
-      </div>
-    </form>
-
-    <hr style="border:none;border-top:1px solid var(--line);margin:20px 0 16px">
+    </div>
+    <hr style="border:none;border-top:1px solid var(--line);margin:0 0 16px">
+    {% endif %}
 
     {# Secondary path: the local test account, collapsed by default.
-       It is a separate <details>/<form>, so collapsing it only hides the form —
-       it can never strip fields from a submission, which is what broke the
-       earlier single-form layout. The form action is the same handler. #}
-    <details id="test-login" {% if show_test_login or error %}open{% endif %}>
+       It is a separate <form> inside its own <details>, so collapsing hides
+       the form without ever stripping fields from a submission. #}
+    <details id="test-login"{% if show_test_login or error %} open{% endif %}>
       <summary style="cursor:pointer;color:var(--ink-3);font-size:13.5px">
-        用测试账号登录（OpenAgent 未传递身份时使用）
+        用测试账号登录（{% if sso_enabled %}SSO 不可用时备用{% else %}OpenAgent 未传递身份时使用{% endif %}）
       </summary>
       <form action="/ui/login" method="post" style="margin-top:14px">
         <label for="username">测试账号</label>

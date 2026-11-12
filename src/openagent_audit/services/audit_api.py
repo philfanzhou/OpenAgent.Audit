@@ -22,7 +22,9 @@ import html
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import os
 from pathlib import Path
+import secrets
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -55,6 +57,7 @@ from openagent_audit.services.auth import (
 )
 from openagent_audit.services.decrypt_client import HttpDecryptService, InProcessDecryptService
 from openagent_audit.services.reveal_service import RevealError, RevealService
+from openagent_audit.services.sso import SsoClient, SsoError, sign_state_cookie, verify_state_cookie
 from openagent_audit.tls import httpx_tls_kwargs, warn_if_verification_disabled
 from openagent_audit.timezone_display import resolve_timezone, to_display, zone_label
 from openagent_audit.tracing.drop_monitor import DropMonitor
@@ -64,6 +67,10 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _SESSION_COOKIE = "openagent_audit_session"
 # Platform token handed to the browser, used to resolve who is signed in.
 _IDENTITY_COOKIE = "openagent_audit_identity"
+# Signed cookie carrying the OIDC state across the SSO round trip.
+_SSO_STATE_COOKIE = "openagent_audit_sso_state"
+# Secret for signing that cookie; generated per deployment.
+_SSO_STATE_SECRET_ENV = "AUDIT_SSO_STATE_SECRET"
 
 # Search-first: unconditional browsing of the session list is allowed only up
 # to this many sessions; beyond it the UI demands a search/filter.
@@ -97,6 +104,7 @@ class AppContainer:
     trace_store: object
     object_store: object | None
     drop_monitor: DropMonitor = field(default_factory=DropMonitor)
+    sso: SsoClient | None = None
     # Display timezone: entries are stored in UTC and rendered in this zone.
     display_tz: object = field(default_factory=lambda: timezone.utc)
 
@@ -139,6 +147,8 @@ def build_container(settings: Settings) -> AppContainer:
 
     warn_if_verification_disabled(settings)
 
+    sso_client = SsoClient(settings)
+
     return AppContainer(
         settings=settings,
         db=db,
@@ -153,6 +163,7 @@ def build_container(settings: Settings) -> AppContainer:
         trace_store=trace_store,
         object_store=object_store,
         display_tz=resolve_timezone(settings.display_timezone),
+        sso=sso_client,
     )
 
 
@@ -763,78 +774,159 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return RedirectResponse("/ui/sessions", status_code=302)
 
     @app.get("/ui/login", response_class=HTMLResponse)
-    def ui_login(request: Request, token: str | None = None):
-        """Login page, optionally consuming a platform token from the URL.
-
-        The automatic path: OpenAgent redirects here as
-        ``/ui/login?token=<访问令牌>`` and the browser signs in immediately,
-        with no typing. That is what makes "use my OpenAgent account" work —
-        the platform already knows who the user is, it just has to hand the
-        token over.
-
-        The token is consumed once and never rendered into the page; the
-        browser's history keeps it, so a deployment behind a proxy should also
-        redirect with a fragment-free query. If the token is rejected the page
-        falls back to the manual forms rather than looping.
-        """
-        if token and token.strip():
-            principal = container.identities.resolve(token.strip())
-            if principal is not None:
-                session = container.sessions.create(principal)
-                container.audit.append(
-                    actor=principal.username,
-                    role=principal.role,
-                    action="LOGIN",
-                    object_type="session",
-                    object_id=principal.username,
-                    detail={"via": "url-token", "ephemeral": False},
-                )
-                secure = _cookie_security(request)
-                response = RedirectResponse("/ui/sessions", status_code=302)
-                response.set_cookie(_SESSION_COOKIE, session.token, **secure)
-                response.set_cookie(_IDENTITY_COOKIE, token.strip(), **secure)
-                return response
-
-            # Rejected: show the page with a clear reason instead of a loop.
-            return render(
-                request,
-                "login.html",
-                error="OpenAgent 令牌无效或平台暂时不可达，请重新从平台进入，或使用测试账号。",
-                test_username=settings.test_username,
-                show_test_login=True,
-                status_code=401,
-            )
-
+    async def ui_login(request: Request):
+        """Login page: enterprise SSO as the primary path, test account as the fallback."""
         return render(
             request,
             "login.html",
             error=None,
             test_username=settings.test_username,
             show_test_login=False,
+            sso_enabled=bool(container.sso and container.sso.is_enabled()),
         )
 
+    # Generated once per process. The start route signs the state and the
+    # callback verifies it, so a per-call value would make every login fail.
+    # Across restarts an in-flight login fails and the user retries - the
+    # safe default. AUDIT_SSO_STATE_SECRET makes it survive restarts.
+    _state_secret = os.environ.get(_SSO_STATE_SECRET_ENV) or secrets.token_urlsafe(32)
+
+    def _sso_state_secret() -> str:
+        return _state_secret
+
+    @app.get("/ui/login/sso/start")
+    async def ui_sso_start(request: Request):
+        """Begin the SSO round trip: state cookie + 302 to the authorize URL."""
+        if container.sso is None or not container.sso.is_enabled():
+            return RedirectResponse("/ui/login", status_code=302)
+
+        base_url = str(request.base_url).rstrip("/")
+        state_secret = _sso_state_secret()
+        try:
+            url, state, verifier = await container.sso.authorization_url(base_url)
+        except SsoError as exc:
+            return render(
+                request,
+                "login.html",
+                error=str(exc),
+                test_username=settings.test_username,
+                show_test_login=True,
+                status_code=502,
+            )
+
+        response = RedirectResponse(url, status_code=302)
+        # Signed, short-lived cookies bind the round trip to this browser.
+        # The callback verifies the returned state against the signed value,
+        # which is the CSRF defence; the verifier completes PKCE.
+        response.set_cookie(
+            _SSO_STATE_COOKIE,
+            sign_state_cookie(state, state_secret),
+            max_age=600,
+            **_cookie_security(request),
+        )
+        response.set_cookie(
+            "openagent_audit_sso_pkce",
+            verifier,
+            max_age=600,
+            **_cookie_security(request),
+        )
+        return response
+
+    @app.get("/ui/login/sso/callback")
+    async def ui_sso_callback(request: Request):
+        """Finish the SSO round trip: verify state, exchange code, sign in."""
+        state_cookie = request.cookies.get(_SSO_STATE_COOKIE)
+        pkce_verifier = request.cookies.get("openagent_audit_sso_pkce")
+        if not state_cookie or not pkce_verifier:
+            return render(
+                request,
+                "login.html",
+                error="SSO 登录会话缺失，请重新点击「用企业账号登录」。",
+                test_username=settings.test_username,
+                show_test_login=True,
+                status_code=400,
+            )
+
+        query_state = request.query_params.get("state")
+        code = request.query_params.get("code")
+        if not query_state or not code:
+            error = request.query_params.get("error_description") or request.query_params.get("error")
+            return render(
+                request,
+                "login.html",
+                error=f"SSO 登录被取消或失败：{error or '未知原因'}。",
+                test_username=settings.test_username,
+                show_test_login=True,
+                status_code=401,
+            )
+
+        try:
+            expected_state = verify_state_cookie(state_cookie, _sso_state_secret())
+        except SsoError as exc:
+            return render(
+                request,
+                "login.html",
+                error=str(exc),
+                test_username=settings.test_username,
+                show_test_login=True,
+                status_code=400,
+            )
+
+        import hmac as _hmac
+
+        if not _hmac.compare_digest(query_state, expected_state):
+            return render(
+                request,
+                "login.html",
+                error="SSO 回调校验失败（state 不匹配），请重新登录。",
+                test_username=settings.test_username,
+                show_test_login=True,
+                status_code=400,
+            )
+
+        base_url = str(request.base_url).rstrip("/")
+        try:
+            identity = await container.sso.exchange_and_identify(
+                base_url, code, pkce_verifier)
+        except SsoError as exc:
+            return render(
+                request,
+                "login.html",
+                error=str(exc),
+                test_username=settings.test_username,
+                show_test_login=True,
+                status_code=502,
+            )
+
+        principal = Principal(username=identity.username, role=ROLE_USER)
+        session = container.sessions.create(principal)
+        container.audit.append(
+            actor=principal.username,
+            role=principal.role,
+            action="LOGIN",
+            object_type="session",
+            object_id=principal.username,
+            detail={"via": "sso", "ephemeral": False},
+        )
+        response = RedirectResponse("/ui/sessions", status_code=302)
+        response.set_cookie(_SESSION_COOKIE, session.token, **_cookie_security(request))
+        # The SSO round-trip cookies have served their purpose.
+        response.delete_cookie(_SSO_STATE_COOKIE, secure=_is_https(request))
+        response.delete_cookie("openagent_audit_sso_pkce", secure=_is_https(request))
+        return response
+
     @app.post("/ui/login")
-    def ui_login_post(
+    async def ui_login_post(
         request: Request,
         token: str = Form(""),
         username: str = Form(""),
         password: str = Form(""),
     ):
-        """Sign in, either as a platform identity or with the local test account.
+        """Manual sign-in paths.
 
-        Two ways in, because the deployment has two situations:
-
-        * **Platform identity** — the normal path. The browser carries a token
-          issued by OpenAgent; this posts it and the platform says who the
-          caller is. Every such identity is an ordinary ``user``.
-        * **Local test account** — a fallback for when the platform is not
-          forwarding an identity at all. It lets somebody confirm the console
-          renders, and it is deliberately unable to reach the administrator
-          role (see ``AUDIT_TEST_USERNAME``).
-
-        A bare username/password that matches the admin account signs in the
-        ordinary user first; the administrator step-up is still a separate
-        action, so the audit trail always shows who was at the console.
+        The primary path is the SSO round trip above. This endpoint handles the
+        two manual fallbacks: pasting a platform token, and the local test
+        account (an ordinary user that can never reach the admin role).
         """
         principal: Principal | None = None
         via = ""
@@ -844,34 +936,32 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             via = settings.auth_provider
 
         if principal is None and username.strip():
-            # Local test account (never the administrator: grant_admin refuses).
             principal = container.identities.resolve_test_account(username.strip(), password)
             if principal is not None:
                 via = "test-account"
 
         if principal is None:
-            # Say what was actually wrong. "Enter something" is unhelpful when
-            # the user did type credentials and only one half was rejected.
             if username.strip() and not password:
                 message = "请输入测试账号的密码。"
             elif username.strip() or password:
                 if not settings.test_username or not settings.test_password:
                     message = (
                         "测试账号未启用（AUDIT_TEST_USERNAME/AUDIT_TEST_PASSWORD 为空）。"
-                        "请改用 OpenAgent 令牌登录。"
+                        "请改用企业账号登录。"
                     )
                 else:
                     message = "测试账号或密码不正确。"
             elif token.strip():
                 message = "OpenAgent 令牌无效，或平台暂时不可达。"
             else:
-                message = "请输入 OpenAgent 令牌，或测试账号与密码。"
+                message = "请使用企业账号登录，或使用测试账号。"
             return render(
                 request,
                 "login.html",
                 error=message,
                 test_username=settings.test_username,
                 show_test_login=True,
+                sso_enabled=bool(container.sso and container.sso.is_enabled()),
                 status_code=401,
             )
 

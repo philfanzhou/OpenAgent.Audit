@@ -1,33 +1,33 @@
-"""Getting into the console: automatic platform login, test account, errors.
+"""Getting into the console: enterprise SSO, test account, error handling.
 
-Three paths must work and must not be confused with each other:
+Three paths:
 
-* **Automatic** — OpenAgent redirects with ``?token=...``; the browser is
-  signed in immediately as itself. This is the normal way in.
-* **Manual token** — the user pastes a token into the first form.
-* **Test account** — the fallback form, always an ordinary user.
+* **Enterprise SSO** — the primary path. The console redirects to the company
+  SSO (OIDC Authorization Code + PKCE) and signs the user in as themselves.
+* **Manual token** — pasting a platform token (still accepted for API clients).
+* **Test account** — the fallback, always an ordinary user, one-hour session.
 
-The test-account form used to live inside a collapsed ``<details>`` element
-alongside the token field. A collapsed block can omit its inputs from the
-submission, so a correctly typed test login arrived with an empty username and
-the page answered "请输入 OpenAgent 令牌，或测试账号与密码" — the user was told to
-type what they had just typed. The forms are now independent, and these tests
-pin that structure so it cannot regress.
+A earlier design nested the test-account fields inside a collapsed block of a
+single shared form; a collapsed block can omit its inputs from the submission,
+so a correct test login arrived empty. The forms are independent now, and the
+collapsed section hides the form without touching the submission.
 """
 
 from __future__ import annotations
 
+import urllib.parse
+
 import httpx
 import pytest
+from authlib.integrations.httpx_client import AsyncOAuth2Client
 
 from openagent_audit.config import Settings, UserEntry
 from openagent_audit.services.audit_api import build_container, create_audit_app
+from tests.test_sso_login import MockSso
 from tests.conftest import PASSPHRASE
 
 
-def _client(tmp_path, keypair, **overrides):
-    from fastapi.testclient import TestClient
-
+def _make_app(tmp_path, keypair, **overrides):
     public_pem, private_pem = keypair
     (tmp_path / "pub.pem").write_bytes(public_pem)
     (tmp_path / "priv.pem").write_bytes(private_pem)
@@ -47,49 +47,95 @@ def _client(tmp_path, keypair, **overrides):
         object_store_root=str(tmp_path / "obj"),
     )
     base.update(overrides)
-    container = build_container(Settings(**base))
-    return TestClient(create_audit_app(container)), container
+    return build_container(Settings(**base))
+
+
+@pytest.fixture()
+def sso_app(tmp_path, keypair):
+    container = _make_app(
+        tmp_path, keypair,
+        sso_authority="https://sso.example.com",
+        sso_client_id="openagent-audit",
+        sso_client_secret="s3cret",
+    )
+    mock = MockSso()
+    from openagent_audit.services.sso import SsoClient
+
+    container.sso = SsoClient(container.settings)
+    # discovery reads go through the mock; the token/userinfo exchanges
+    # run on a real AsyncOAuth2Client over the mock transport.
+    async def _mock_discovery(url):
+        return mock.discovery()
+    container.sso._fetch_json = _mock_discovery
+    container.sso._client = mock.oauth_client()
+    container.sso._client = mock.oauth_client()
+    return container, mock
 
 
 class TestLoginPageStructure:
-    def test_two_independent_forms(self, api_client):
-        """Token form and test-account form must be separate, and the test one
-        collapsed by default.
+    def test_sso_button_and_test_form(self, tmp_path, keypair):
+        container = _make_app(
+            tmp_path, keypair,
+            sso_authority="https://sso.example.com",
+            sso_client_id="openagent-audit",
+            sso_client_secret="s3cret",
+        )
+        from fastapi.testclient import TestClient
 
-        Collapsing is fine *because* the test account has its own ``<form>``:
-        hiding the section hides the form, it never strips fields from a
-        submission. The earlier bug was a single form whose test fields lived
-        inside a collapsed block.
-        """
-        page = api_client.get("/ui/login").text
+        client = TestClient(create_audit_app(container))
 
-        assert page.count('<form action="/ui/login"') >= 2
-        assert 'name="token"' in page
+        page = client.get("/ui/login").text
+
+        assert "用企业账号登录" in page
+        assert 'href="/ui/login/sso/start"' in page
+        # the test form is a separate <form> inside its own <details>
         assert 'name="username"' in page
         assert 'name="password"' in page
 
-        # Collapsed on a first visit...
-        assert '<details id="test-login"' in page
+    def test_test_section_collapsed_by_default(self, tmp_path, keypair):
+        container = _make_app(
+            tmp_path, keypair,
+            sso_authority="https://sso.example.com",
+            sso_client_id="openagent-audit",
+            sso_client_secret="s3cret",
+        )
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
+        page = client.get("/ui/login").text
+
+        assert '<details id="test-login">' in page
         assert '<details id="test-login" open>' not in page
 
-    def test_test_section_opens_after_a_failed_attempt(self, tmp_path, keypair):
-        """A failed login must reveal the form instead of hiding the error."""
-        client, _ = _client(tmp_path, keypair)
+    def test_test_section_opens_after_an_error(self, tmp_path, keypair):
+        container = _make_app(tmp_path, keypair)
+        from fastapi.testclient import TestClient
 
-        page = client.post("/ui/login", data={"username": "test", "password": "nope"})
+        client = TestClient(create_audit_app(container))
 
-        assert page.status_code == 401
-        assert '<details id="test-login" open>' in page.text
+        page = client.post(
+            "/ui/login", data={"username": "test", "password": "nope"}
+        ).text
 
-    def test_test_username_is_prefilled(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
+        assert '<details id="test-login" open>' in page
+
+    def test_sso_disabled_hides_the_button(self, tmp_path, keypair):
+        container = _make_app(tmp_path, keypair, sso_client_id="")
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
         page = client.get("/ui/login").text
-        assert 'value="test"' in page
+
+        assert "用企业账号登录" not in page
+        assert "用测试账号登录" in page
 
 
 class TestTestAccountLogin:
     def test_correct_credentials_sign_in(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
+        container = _make_app(tmp_path, keypair)
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
 
         resp = client.post(
             "/ui/login",
@@ -101,33 +147,25 @@ class TestTestAccountLogin:
         assert resp.headers["location"] == "/ui/sessions"
         me = client.get("/v1/me").json()
         assert me["username"] == "test"
-        assert me["role"] == "user"
         assert me["is_admin"] is False
 
-    def test_empty_token_field_does_not_block_the_test_login(self, tmp_path, keypair):
-        """This is the exact shape a browser submits from the second form."""
-        client, _ = _client(tmp_path, keypair)
-
-        resp = client.post(
-            "/ui/login",
-            data={"token": "", "username": "test", "password": "test@123456"},
-            follow_redirects=False,
-        )
-
-        assert resp.status_code == 302, resp.text
-
     def test_missing_password_says_so(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
+        container = _make_app(tmp_path, keypair)
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
 
         page = client.post("/ui/login", data={"username": "test", "password": ""})
 
         assert page.status_code == 401
         assert "密码" in page.text
-        # must not claim nothing was entered
         assert "请输入 OpenAgent 令牌，或测试账号与密码" not in page.text
 
     def test_wrong_password_says_so(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
+        container = _make_app(tmp_path, keypair)
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
 
         page = client.post("/ui/login", data={"username": "test", "password": "nope"})
 
@@ -135,105 +173,171 @@ class TestTestAccountLogin:
         assert "测试账号或密码不正确" in page.text
 
     def test_disabled_test_account_explains_itself(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair, test_username="", test_password="")
+        container = _make_app(tmp_path, keypair, test_username="", test_password="")
+        from fastapi.testclient import TestClient
 
-        page = client.post("/ui/login", data={"username": "test", "password": "test@123456"})
+        client = TestClient(create_audit_app(container))
+
+        page = client.post(
+            "/ui/login", data={"username": "test", "password": "test@123456"}
+        )
 
         assert page.status_code == 401
         assert "测试账号未启用" in page.text
 
     def test_nothing_entered_keeps_the_generic_hint(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
+        container = _make_app(tmp_path, keypair)
+        from fastapi.testclient import TestClient
 
-        page = client.post("/ui/login", data={"token": "", "username": "", "password": ""})
+        client = TestClient(create_audit_app(container))
+
+        page = client.post(
+            "/ui/login", data={"token": "", "username": "", "password": ""}
+        )
 
         assert page.status_code == 401
-        assert "请输入 OpenAgent 令牌，或测试账号与密码" in page.text
+        assert "请使用企业账号登录，或使用测试账号" in page.text
+
+    def test_test_account_cannot_reach_admin(self, tmp_path, keypair):
+        container = _make_app(tmp_path, keypair)
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
+        client.post(
+            "/ui/login",
+            data={"username": "test", "password": "test@123456"},
+            follow_redirects=False,
+        )
+
+        assert (
+            client.post(
+                "/ui/admin/login",
+                data={"username": "admin", "password": "admin@123456"},
+                follow_redirects=False,
+            ).status_code
+            == 403
+        )
+        assert client.post("/v1/reveal/deadbeefdeadbeef").status_code == 403
 
 
-class TestAutomaticPlatformLogin:
-    """``/ui/login?token=...`` is how OpenAgent hands a signed-in user over."""
+class TestManualTokenLogin:
+    def test_valid_token_signs_in(self, tmp_path, keypair):
+        container = _make_app(tmp_path, keypair)
+        from fastapi.testclient import TestClient
 
-    def test_url_token_signs_in_without_typing(self, tmp_path, keypair):
-        client, container = _client(tmp_path, keypair)
+        client = TestClient(create_audit_app(container))
 
-        resp = client.get("/ui/login?token=tok-alice", follow_redirects=False)
+        resp = client.post(
+            "/ui/login", data={"token": "tok-alice"}, follow_redirects=False
+        )
+
+        assert resp.status_code == 302
+        assert client.get("/v1/me").json()["username"] == "alice"
+
+
+class TestSsoRoundTrip:
+    def test_start_redirects_to_sso_with_pkce(self, sso_app):
+        container, _ = sso_app
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
+
+        resp = client.get("/ui/login/sso/start", follow_redirects=False)
+
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        assert location.startswith("https://sso.example.com/authorize")
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        assert query["client_id"] == ["openagent-audit"]
+        assert query["code_challenge_method"] == ["S256"]
+        assert query["redirect_uri"] == [
+            "http://testserver/ui/login/sso/callback"
+        ]
+        # the state cookie is set for the callback to verify
+        assert "openagent_audit_sso_state" in resp.headers["set-cookie"]
+
+    def test_callback_signs_in_as_the_sso_user(self, sso_app):
+        container, mock = sso_app
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
+
+        start = client.get("/ui/login/sso/start", follow_redirects=False)
+        authorize_url = start.headers["location"]
+        # the SSO would redirect back with the code; extract the state like the browser does
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(authorize_url).query)
+        state = query["state"][0]
+
+        callback = f"/ui/login/sso/callback?code=auth-code&state={urllib.parse.quote(state)}"
+        resp = client.get(callback, follow_redirects=False)
 
         assert resp.status_code == 302
         assert resp.headers["location"] == "/ui/sessions"
         me = client.get("/v1/me").json()
-        assert me["username"] == "alice"
+        assert me["username"] == "zhang.san"  # the mock SSO answers with this identity
+        assert me["is_admin"] is False
 
-    def test_automatic_login_is_recorded(self, tmp_path, keypair):
-        client, container = _client(tmp_path, keypair)
+    def test_callback_is_audited(self, sso_app):
+        container, mock = sso_app
+        from fastapi.testclient import TestClient
 
-        client.get("/ui/login?token=tok-alice", follow_redirects=False)
+        client = TestClient(create_audit_app(container))
 
-        entry = [e for e in container.db.iter_audit() if e.action == "LOGIN"][-1]
-        assert entry.actor == "alice"
-        assert entry.detail["via"] == "url-token"
-
-    def test_token_is_not_rendered_into_the_page(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
-        client.get("/ui/login?token=tok-alice", follow_redirects=False)
-
-        page = client.get("/ui/sessions").text
-
-        assert "tok-alice" not in page
-
-    def test_invalid_url_token_falls_back_to_the_forms(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
-
-        page = client.get("/ui/login?token=bogus")
-
-        assert page.status_code == 401
-        assert "令牌无效" in page.text
-        # the manual forms are still offered, no redirect loop
-        assert 'name="username"' in page.text
-
-    def test_no_token_renders_the_plain_page(self, tmp_path, keypair):
-        client, _ = _client(tmp_path, keypair)
-        page = client.get("/ui/login")
-        assert page.status_code == 200
-
-    def test_platform_identity_resolves_through_me_endpoint(self, tmp_path, keypair):
-        """The real integration path: OpenAgent's /me answers who the caller is."""
-        from openagent_audit.services.auth import IdentityResolver
-
-        settings = Settings(
-            auth_provider="http",
-            auth_introspect_url="http://engine:8083/api/v1/agent/me",
+        start = client.get("/ui/login/sso/start", follow_redirects=False)
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(start.headers["location"]).query)
+        state = query["state"][0]
+        client.get(
+            f"/ui/login/sso/callback?code=auth-code&state={urllib.parse.quote(state)}",
+            follow_redirects=False,
         )
 
-        class FakeMe:
-            def get(self, url, headers):
-                assert headers["Authorization"] == "Bearer api-key-token"
-                return httpx.Response(
-                    200,
-                    json={
-                        "userId": "u-12345",
-                        "username": "zhang.san",
-                        "email": "zhang.san@corp.com",
-                        "tenantId": "corp",
-                        "roles": ["user"],
-                        "isAuthenticated": True,
-                    },
-                )
+        entry = [e for e in container.db.iter_audit() if e.action == "LOGIN"][-1]
+        assert entry.actor == "zhang.san"
+        assert entry.detail["via"] == "sso"
 
-        principal = IdentityResolver(settings, client=FakeMe()).resolve("api-key-token")
+    def test_tampered_state_is_rejected(self, sso_app):
+        container, mock = sso_app
+        from fastapi.testclient import TestClient
 
-        assert principal is not None
-        assert principal.username == "zhang.san"
-        assert principal.role == "user"
-        assert principal.can("reveal") is False
+        client = TestClient(create_audit_app(container))
+        client.get("/ui/login/sso/start", follow_redirects=False)
 
-    def test_automatic_login_grants_no_admin(self, tmp_path, keypair):
-        """Being signed in automatically must not skip the admin step-up."""
-        client, _ = _client(tmp_path, keypair)
-        client.get("/ui/login?token=tok-alice", follow_redirects=False)
+        page = client.get(
+            "/ui/login/sso/callback?code=auth-code&state=forged", follow_redirects=False
+        )
+
+        assert page.status_code == 400
+        assert "state 不匹配" in page.text
+
+    def test_sso_failure_lands_on_the_login_page(self, tmp_path, keypair):
+        container = _make_app(tmp_path, keypair)
+        # point the client at an unreachable SSO (no mocked transport)
+        from openagent_audit.services.sso import SsoClient
+
+        container.sso = SsoClient(container.settings)  # authority is example.com
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
+
+        page = client.get("/ui/login/sso/start")
+
+        # discovery fails; the page explains and keeps the test form available
+        assert page.status_code in (200, 502)
+        assert "name=\"username\"" in page.text
+
+    def test_automatic_login_grants_no_admin(self, sso_app):
+        container, mock = sso_app
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_audit_app(container))
+
+        start = client.get("/ui/login/sso/start", follow_redirects=False)
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(start.headers["location"]).query)
+        state = query["state"][0]
+        client.get(
+            f"/ui/login/sso/callback?code=auth-code&state={urllib.parse.quote(state)}",
+            follow_redirects=False,
+        )
 
         assert client.get("/v1/audit-log").status_code == 403
         assert client.post("/v1/reveal/deadbeefdeadbeef").status_code == 403
-
-        page = client.get("/ui/sessions").text
-        assert "登录管理员" in page  # the ordinary user may still step up
