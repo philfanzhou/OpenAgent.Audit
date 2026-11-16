@@ -301,7 +301,8 @@ def mask_span(
     if user_id:
         _set_attr(span, "langfuse.user.id", user_id)
     if agent_id:
-        _set_attr(span, "langfuse.tag.agent", agent_id)
+        # 审计台按 "agent:" 前缀识别 agent 标签（trace_store），值带上前缀。
+        _set_attr(span, "langfuse.tag.agent", f"agent:{agent_id}")
 
 
 def mask_resource_attrs(

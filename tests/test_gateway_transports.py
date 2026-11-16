@@ -174,7 +174,7 @@ def test_json_ingest_masks_and_forwards(gw):
     attrs = {a["key"]: a["value"] for a in span["attributes"]}
     assert attrs["langfuse.session.id"]["stringValue"] == "conv-1"
     assert attrs["langfuse.user.id"]["stringValue"] == "usr_1"
-    assert attrs["langfuse.tag.agent"]["stringValue"] == "cs-bot"
+    assert attrs["langfuse.tag.agent"]["stringValue"] == "agent:cs-bot"
 
     rows = sqlite3.connect(gw["db_path"]).execute(
         "SELECT entity_id, trace_id, session_id FROM entity_ciphertext"

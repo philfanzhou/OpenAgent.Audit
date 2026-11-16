@@ -81,7 +81,7 @@ def normalize_langfuse_trace(row: dict) -> TraceRecord:
     if isinstance(tags, str):
         tags = [tags]
     tags = [t for t in tags if isinstance(t, str)]
-    agent_tag = next((t for t in tags if t.startswith("agent:")), tags[0] if tags else "")
+    agent_tag = next((t[len("agent:"):] for t in tags if t.startswith("agent:")), tags[0] if tags else "")
 
     observations: list[ObservationRecord] = []
     for obs in row.get("observations") or []:

@@ -195,7 +195,7 @@ class TestIdentifierPreservation:
         }
         assert attrs["langfuse.session.id"] == "conv-9"
         assert attrs["langfuse.user.id"] == "usr_9"
-        assert attrs["langfuse.tag.agent"] == "cs-bot"
+        assert attrs["langfuse.tag.agent"] == "agent:cs-bot"
 
 
 class TestNestedStructures:

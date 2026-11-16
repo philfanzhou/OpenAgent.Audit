@@ -110,7 +110,8 @@ def test_agent_is_promoted_for_the_console():
         if attr["key"] == "langfuse.tag.agent"
     ]
     assert promoted, "agent 必须提升为 langfuse.tag.agent（审计台 Agent 列依赖它）"
-    assert promoted[0]["value"]["stringValue"] == "cs-bot"
+    # 值带 "agent:" 前缀——trace_store 提取时会剥掉前缀再交给会话列表。
+    assert promoted[0]["value"]["stringValue"] == "agent:cs-bot"
 
 
 import pytest  # noqa: E402  (fixture 依赖 pytest，放底部导入亦可)

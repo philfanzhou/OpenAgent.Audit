@@ -118,7 +118,7 @@ def test_mask_seal_forward(gateway):
     keys = {a["key"]: a.get("value", {}).get("stringValue") for a in span["attributes"]}
     assert keys["langfuse.session.id"] == "conv-1001"
     assert keys["langfuse.user.id"] == "usr_20077120"
-    assert keys["langfuse.tag.agent"] == "cs-bot"
+    assert keys["langfuse.tag.agent"] == "agent:cs-bot"
     # non-content attribute untouched
     assert keys["http.method"] == "POST"
 

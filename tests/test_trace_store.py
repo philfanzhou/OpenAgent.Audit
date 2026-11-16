@@ -19,7 +19,7 @@ NOW = datetime(2026, 10, 20, tzinfo=timezone.utc)
 
 def trace(tid: str, session: str, user: str, ts: datetime = NOW) -> TraceRecord:
     return TraceRecord(
-        trace_id=tid, session_id=session, user_id=user, agent_tag="agent:cs-bot",
+        trace_id=tid, session_id=session, user_id=user, agent_tag="cs-bot",
         name="POST /agent/run", timestamp=ts,
         observations=(ObservationRecord(id="o1", type="span", name="接收请求", input="⟦PHONE_NUMBER#x|138****5678⟧"),),
     )
@@ -43,7 +43,7 @@ class TestLocalTraceStore:
         sessions = store.list_sessions()
         (s,) = sessions
         assert s["session_id"] == "s1" and s["trace_count"] == 2
-        assert s["agent_tags"] == ["agent:cs-bot"]
+        assert s["agent_tags"] == ["cs-bot"]
         assert s["last_ts"] == NOW + timedelta(minutes=5)
 
     def test_delete_older_than(self):
@@ -154,7 +154,7 @@ class TestLangfuseTraceStore:
         assert payload["trace_id"] == "t-1"
         assert payload["session_id"] == "sess-1"
         assert payload["user_id"] == "usr_1"
-        assert payload["agent_tag"] == "agent:cs-bot"
+        assert payload["agent_tag"] == "cs-bot"
         assert payload["timestamp"].startswith("2026-10-20T10:00:00")
         (obs,) = payload["observations"]
         assert obs["id"] == "obs-1" and obs["model"] == "glm-4"
