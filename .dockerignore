@@ -1,0 +1,17 @@
+# Keep the build context small and free of secrets/artifacts.
+# The image only needs pyproject.toml, README.md and src/.
+.git
+.env
+.env.*
+keys
+data
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.pytest_cache
+docs
+tests
+scripts
+deployment
+.dockerignore

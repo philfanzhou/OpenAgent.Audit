@@ -900,13 +900,23 @@ def create_audit_app(container: AppContainer) -> FastAPI:
 
         principal = Principal(username=identity.username, role=ROLE_USER)
         session = container.sessions.create(principal)
+        # The SSO's claims go into the login record: the audit console is where
+        # "who signed in" is answered, and a bare username like a UUID is exactly
+        # the kind of mystery these claims explain.
         container.audit.append(
             actor=principal.username,
             role=principal.role,
             action="LOGIN",
             object_type="session",
             object_id=principal.username,
-            detail={"via": "sso", "ephemeral": False},
+            detail={
+                "via": "sso",
+                "ephemeral": False,
+                "sso_claims": {
+                    str(key): str(value)[:200]
+                    for key, value in identity.raw_claims.items()
+                },
+            },
         )
         response = RedirectResponse("/ui/sessions", status_code=302)
         response.set_cookie(_SESSION_COOKIE, session.token, **_cookie_security(request))

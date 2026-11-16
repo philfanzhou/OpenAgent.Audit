@@ -26,7 +26,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 from urllib.parse import urlencode
 
 from authlib.integrations.httpx_client import AsyncOAuth2Client
@@ -49,6 +50,11 @@ class SsoIdentity:
     username: str
     email: str | None
     display_name: str | None
+    #: Every claim the SSO's userinfo endpoint returned. Kept so the login
+    #: audit record can show which identity fields the deployment's SSO
+    #: actually provides - the first live login answered with a bare `sub`,
+    #: and this is how that becomes visible instead of a mystery.
+    raw_claims: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -238,20 +244,51 @@ class SsoClient:
             raise SsoError("SSO 登录失败：无法获取用户身份。")
         claims = response.json()
 
-        username = _first_claim(claims, ("preferred_username", "upn", "username", "sub"))
+        # Some SSO deployments keep human-readable identity in the id_token
+        # rather than userinfo. Merge both, userinfo winning: everything here
+        # arrived over the TLS-protected token exchange, so the claims are
+        # as trustworthy as the channel.
+        raw_id_token = token.get("id_token") if isinstance(token, dict) else None
+        if isinstance(raw_id_token, str) and raw_id_token.count(".") == 2:
+            try:
+                payload = raw_id_token.split(".")[1]
+                payload += "=" * (-len(payload) % 4)
+                id_claims = json.loads(base64.urlsafe_b64decode(payload))
+                if isinstance(id_claims, dict):
+                    claims = {**id_claims, **claims}
+            except (ValueError, TypeError):
+                pass
+
+        username = _first_claim(claims, ("preferred_username", "upn", "username", "loginname", "login_name", "account", "employeeid", "employee_id", "sub"))
         if not username:
             raise SsoError("SSO 未返回可用的用户标识，请联系管理员。")
+
+        if not isinstance(claims, dict):
+            raise SsoError("SSO 用户信息格式异常，请联系管理员。")
 
         return SsoIdentity(
             username=username,
             email=_first_claim(claims, ("email",)),
-            display_name=_first_claim(claims, ("name",)),
+            display_name=_first_claim(claims, ("name", "displayName", "nickname")),
+            raw_claims=dict(claims),
         )
 
 
 def _first_claim(claims: dict, keys: tuple[str, ...]) -> str | None:
+    """First non-blank string among *keys*.
+
+    The MPS SSO's userinfo shape is not publicly documented, so the lookup is
+    case-insensitive and covers camelCase variants of the snake_case keys
+    before giving up. Non-string values are skipped.
+    """
+    lowered = {
+        key.strip().lower(): value
+        for key, value in claims.items()
+        if isinstance(key, str)
+    }
     for key in keys:
-        value = claims.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+        for candidate in (key, key.replace("_", "")):
+            value = lowered.get(candidate.lower())
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return None
