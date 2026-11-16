@@ -515,7 +515,12 @@ class LangfuseTraceStore:
             tags = obs.get("tags") or []
             if isinstance(tags, str):
                 tags = [tags]
-            entry["agent_tags"].update(t for t in tags if isinstance(t, str))
+            # 与 _trace_from_dict 一致：剥掉网关打的 "agent:" 前缀，
+            # 会话列表显示干净的 agent 标识。
+            entry["agent_tags"].update(
+                t[len("agent:"):] if t.startswith("agent:") else t
+                for t in tags if isinstance(t, str)
+            )
         return [
             {
                 "session_id": s["session_id"],

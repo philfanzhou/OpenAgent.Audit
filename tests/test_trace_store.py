@@ -236,5 +236,5 @@ class TestLangfuseTraceStore:
         assert by_id["s1"]["trace_count"] == 2
         assert by_id["s1"]["first_ts"] == datetime(2026, 10, 20, 10, 0, tzinfo=timezone.utc)
         assert by_id["s1"]["last_ts"] == datetime(2026, 10, 20, 10, 5, tzinfo=timezone.utc)
-        assert by_id["s1"]["agent_tags"] == ["agent:cs-bot"]  # string tag coerced
+        assert by_id["s1"]["agent_tags"] == ["cs-bot"]  # string tag coerced; prefix stripped
         assert by_id["s2"]["trace_count"] == 1
