@@ -34,6 +34,7 @@ def _openagent_span() -> dict:
         for key, value in {
             "openagent.conversation_id": "conv-001",
             "openagent.user_id": "user-uuid-9f2a",
+            "openagent.username": "sinzoli",
             "openagent.agent_id": "cs-bot",
             "langfuse.observation.input": f"我买的手机三天没发货，手机号{PHONE}",
             "langfuse.observation.output": "您的订单已发货",
@@ -89,6 +90,17 @@ def test_identifiers_survive_unmasked():
     assert "openagent.conversation_id" in keys
     assert "openagent.user_id" in keys
     assert "openagent.agent_id" in keys
+
+
+def test_username_becomes_the_langfuse_user_identity():
+    """引擎的登录名优先于内部用户 UUID——审计台用户列显示域账号。"""
+    span = _run(_openagent_span())
+    promoted = [
+        attr for attr in span["attributes"]
+        if attr["key"] == "langfuse.user.id"
+    ]
+    assert promoted, "langfuse.user.id 必须被设置"
+    assert promoted[0]["value"]["stringValue"] == "sinzoli"
 
 
 def test_agent_is_promoted_for_the_console():

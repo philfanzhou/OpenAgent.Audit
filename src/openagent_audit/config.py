@@ -27,6 +27,7 @@ DEFAULT_SESSION_ATTRS = (
     "openagent.conversation_id", "conversation_id",
 )
 DEFAULT_USER_ATTRS = (
+    "openagent.username",
     "langfuse.user.id", "user.id", "enduser.id",
     "openagent.user_id", "user_id",
 )
