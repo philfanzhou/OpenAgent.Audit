@@ -76,6 +76,7 @@ services:
       REDIS_HOST: redis
       REDIS_AUTH: ${REDIS_PASSWORD}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?}
       SALT: ${SALT:?}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?}
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
@@ -83,6 +84,7 @@ services:
       LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
       # Media is uploaded by the application (client-side encrypted) —
       # deliberately NOT configuring LANGFUSE_S3_MEDIA_UPLOAD_*.
 
