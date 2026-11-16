@@ -259,7 +259,7 @@ class SsoClient:
             except (ValueError, TypeError):
                 pass
 
-        username = _first_claim(claims, ("preferred_username", "upn", "username", "loginname", "login_name", "account", "employeeid", "employee_id", "sub"))
+        username = _first_claim(claims, ("preferred_username", "upn", "username", "name", "loginname", "login_name", "account", "employeeid", "employee_id", "sub"))
         if not username:
             raise SsoError("SSO 未返回可用的用户标识，请联系管理员。")
 

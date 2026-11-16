@@ -38,9 +38,11 @@ BASE = "http://REDACTED-INTERNAL-IP:8100"
 class MockSso:
     """The SSO's three endpoints over an httpx.MockTransport."""
 
-    def __init__(self, *, userinfo: dict | None = None, status: int = 200):
+    def __init__(self, *, userinfo: dict | None = None, status: int = 200,
+                 id_token_claims: dict | None = None):
         self.userinfo = userinfo or {"preferred_username": "zhang.san"}
         self.status = status
+        self.id_token_claims = id_token_claims or {}
         self.token_calls: list[dict] = []
         self.userinfo_calls = 0
         self.verifier_seen: str | None = None
@@ -55,9 +57,20 @@ class MockSso:
             self.verifier_seen = body.get("code_verifier")
             if self.status != 200:
                 return httpx.Response(self.status, json={"error": "nope"})
+            import base64
+
+            def _b64url(data: bytes) -> str:
+                return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+            header = _b64url(json.dumps({"alg": "none"}).encode())
+            payload = _b64url(json.dumps(self.id_token_claims).encode())
             return httpx.Response(
                 200,
-                json={"access_token": "at", "id_token": "it", "token_type": "Bearer"},
+                json={
+                    "access_token": "at",
+                    "id_token": f"{header}.{payload}.",
+                    "token_type": "Bearer",
+                },
             )
         if request.url.path.endswith("/userinfo"):
             self.userinfo_calls += 1
