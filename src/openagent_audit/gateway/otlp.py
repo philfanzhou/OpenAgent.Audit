@@ -301,8 +301,21 @@ def mask_span(
     if user_id:
         _set_attr(span, "langfuse.user.id", user_id)
     if agent_id:
-        # 审计台按 "agent:" 前缀识别 agent 标签（trace_store），值带上前缀。
-        _set_attr(span, "langfuse.tag.agent", f"agent:{agent_id}")
+        # 审计台按 "agent:" 前缀识别 agent 标签（trace_store 提取时会剥掉前缀）。
+        tag_value = f"agent:{agent_id}"
+        _set_attr(span, "langfuse.tag.agent", tag_value)
+        # Langfuse v4 对 tag 的 OTLP 映射存在两种形态（langfuse.tag.<name> 与
+        # langfuse.tags 数组），无法离线确认部署实例采用哪种——双写覆盖两种
+        # 映射；trace_store 用 set 归集，重复标签不会重复渲染。
+        attrs = span.setdefault("attributes", [])
+        tags_attr = next((
+            attr for attr in attrs if attr.get("key") == "langfuse.tags"
+        ), None)
+        if tags_attr is None:
+            attrs.append({
+                "key": "langfuse.tags",
+                "value": {"arrayValue": {"values": [{"stringValue": tag_value}]}},
+            })
 
 
 def mask_resource_attrs(
