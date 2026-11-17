@@ -1,4 +1,4 @@
-# 部署任务：在 REDACTED-INTERNAL-IP 上部署 OpenAgent.Audit 并升级 OpenAgent
+# 部署任务：在 <审计服务器内网IP> 上部署 OpenAgent.Audit 并升级 OpenAgent
 
 > 这份文件是**给内网电脑上的 AI agent 执行的任务提示词**。
 > 请把它整份读完后，按步骤执行。遇到不确定的地方先停下来问人，不要猜。
@@ -7,7 +7,7 @@
 
 ## 0. 角色与目标
 
-你是部署执行者。目标是把两套系统部署到公司内网 Linux 服务器 `REDACTED-INTERNAL-IP`：
+你是部署执行者。目标是把两套系统部署到公司内网 Linux 服务器 `<审计服务器内网IP>`：
 
 | 系统 | 仓库 | 目标目录 | 状态 |
 |---|---|---|---|
@@ -17,9 +17,9 @@
 **服务器登录方式**（特权账号）：
 
 ```
-主机：REDACTED-INTERNAL-IP
+主机：<审计服务器内网IP>
 账号：sinzoli
-密码：REDACTED-PASSWORD
+密码：<服务器密码——不写入仓库>
 ```
 
 对外服务地址：`https://agent.monolithicpower.com:444`
@@ -43,7 +43,7 @@
 
 ```bash
 # 2.1 确认能登录、有 sudo
-ssh sinzoli@REDACTED-INTERNAL-IP
+ssh sinzoli@<审计服务器内网IP>
 sudo -n true && echo "sudo OK"
 
 # 2.2 Docker 可用
@@ -103,7 +103,7 @@ ls -lh openagent*.tar.gz
 
 ```bash
 # 3.3 传到服务器
-scp openagent-audit.tar.gz openagent.tar.gz sinzoli@REDACTED-INTERNAL-IP:/tmp/
+scp openagent-audit.tar.gz openagent.tar.gz sinzoli@<审计服务器内网IP>:/tmp/
 ```
 
 ---
@@ -113,7 +113,7 @@ scp openagent-audit.tar.gz openagent.tar.gz sinzoli@REDACTED-INTERNAL-IP:/tmp/
 ### 4.1 解压
 
 ```bash
-ssh sinzoli@REDACTED-INTERNAL-IP
+ssh sinzoli@<审计服务器内网IP>
 sudo mkdir -p /opt/OpenAgent.Audit
 sudo tar -xzf /tmp/openagent-audit.tar.gz -C /opt/OpenAgent.Audit --strip-components=1
 cd /opt/OpenAgent.Audit && ls
@@ -219,7 +219,7 @@ AUDIT_SSO_CLIENT_SECRET=<SSO 管理员提供>
 AUDIT_SSO_STATE_SECRET=<openssl rand -base64 32 生成>
 ```
 
-并让 SSO 管理员登记回调地址 `http://REDACTED-INTERNAL-IP:8100/ui/login/sso/callback`。
+并让 SSO 管理员登记回调地址 `http://<审计服务器内网IP>:8100/ui/login/sso/callback`。
 
 **这一项不是部署必需**：未配置 SSO 时，用测试账号 `test` 登录仍可正常使用审计台。
 若本次不申请 SSO，请在最终报告中注明"SSO 未对接，当前用测试账号登录"。
@@ -248,7 +248,7 @@ privilege split verified
 
 ### 4.5 创建 Langfuse 项目并回填凭据
 
-1. 浏览器打开 `http://REDACTED-INTERNAL-IP:3000`，注册初始账号
+1. 浏览器打开 `http://<审计服务器内网IP>:3000`，注册初始账号
 2. 新建 Organization → Project
 3. Project Settings → API Keys → 复制 public / secret
 
@@ -268,7 +268,7 @@ curl -fsS http://127.0.0.1:8102/internal/metrics
 docker network ls | grep -E 'openagent(-audit)?$'   # 应有两行
 ```
 
-**浏览器验收**：`http://REDACTED-INTERNAL-IP:8100/ui/login`
+**浏览器验收**：`http://<审计服务器内网IP>:8100/ui/login`
 - 用测试账号 `test` / `test@123456` 登录 → 应只看到「普通用户」，**没有**「登录管理员」按钮
 - 能浏览会话列表（会是空的或演示数据）
 
@@ -393,7 +393,7 @@ sudo docker exec -it $(sudo docker ps -qf name=audit-db) psql -U audit_owner -d 
 
 期望 `trace_id` 是 **32 位小写 hex**，`session_id` 等于平台的 conversation id。
 
-4. 打开审计台 `http://REDACTED-INTERNAL-IP:8100/ui/login`：
+4. 打开审计台 `http://<审计服务器内网IP>:8100/ui/login`：
    - 用测试账号 `test` 登录 → 能看到刚才的会话，内容是脱敏的
    - 用 OpenAgent 正常账号登录 → 点「登录管理员」输入 `admin@123456` → 点击脱敏项可看原文
    - 进「审计日志」→ 能看到 `LOGIN`、`ADMIN_LOGIN`、`ENTITY_REVEALED`

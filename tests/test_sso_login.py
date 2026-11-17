@@ -32,7 +32,7 @@ from openagent_audit.services.sso import (
 )
 
 AUTHORITY = "https://sso.example.com"
-BASE = "http://REDACTED-INTERNAL-IP:8100"
+BASE = "http://audit.example.test:8100"
 
 
 class MockSso:

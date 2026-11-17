@@ -1,7 +1,7 @@
-# 内网部署手册：REDACTED-INTERNAL-IP 更新 OpenAgent 并部署 Audit
+# 内网部署手册：<审计服务器内网IP> 更新 OpenAgent 并部署 Audit
 
-> **读者**：在**内网电脑**上操作、能访问 `REDACTED-INTERNAL-IP` 的工程师。
-> **目标机**：`REDACTED-INTERNAL-IP`，已运行 OpenAgent，对外地址 `https://agent.monolithicpower.com:444`。
+> **读者**：在**内网电脑**上操作、能访问 `<审计服务器内网IP>` 的工程师。
+> **目标机**：`<审计服务器内网IP>`，已运行 OpenAgent，对外地址 `https://agent.monolithicpower.com:444`。
 > **前置事实**：外网机器无法访问服务器，所以所有命令都在**内网电脑**或**经由内网电脑 SSH 到服务器**后执行。
 
 ---
@@ -81,7 +81,7 @@ ls -lh openagent*.tar.gz
 ### 1.4 传到服务器
 
 ```bash
-scp openagent-audit.tar.gz openagent.tar.gz <你的用户名>@REDACTED-INTERNAL-IP:/tmp/
+scp openagent-audit.tar.gz openagent.tar.gz <你的用户名>@<审计服务器内网IP>:/tmp/
 ```
 
 ---
@@ -93,7 +93,7 @@ scp openagent-audit.tar.gz openagent.tar.gz <你的用户名>@REDACTED-INTERNAL-
 ### 2.1 解压
 
 ```bash
-ssh <你的用户名>@REDACTED-INTERNAL-IP
+ssh <你的用户名>@<审计服务器内网IP>
 
 sudo mkdir -p /opt/OpenAgent.Audit
 sudo tar -xzf /tmp/openagent-audit.tar.gz -C /opt/OpenAgent.Audit --strip-components=1
@@ -188,7 +188,7 @@ AUDIT_SSO_SCOPES=openid profile email
 AUDIT_SSO_STATE_SECRET=<openssl rand -base64 32 生成>
 ```
 
-并让 SSO 管理员登记**回调地址**：`http://REDACTED-INTERNAL-IP:8100/ui/login/sso/callback`
+并让 SSO 管理员登记**回调地址**：`http://<审计服务器内网IP>:8100/ui/login/sso/callback`
 （若审计台日后改用域名，回调地址一并更新）。
 
 SSO 未配置时登录页只显示 test 测试账号；SSO 故障时 test 账号仍是应急入口。
@@ -285,7 +285,7 @@ privilege split verified
 
 ### 2.5 创建 Langfuse 项目并回填凭据
 
-1. 浏览器打开 `https://agent.monolithicpower.com:3000`（或 `http://REDACTED-INTERNAL-IP:3000`），注册初始账号
+1. 浏览器打开 `https://agent.monolithicpower.com:3000`（或 `http://<审计服务器内网IP>:3000`），注册初始账号
 2. 新建 Organization → Project
 3. Project Settings → API Keys → 复制 public / secret
 4. 写回 `.env`：
