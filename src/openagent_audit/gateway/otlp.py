@@ -26,7 +26,8 @@ forwarded.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 AttrValue = int | float | bool | str
 JsonDict = dict[str, Any]
@@ -238,7 +239,7 @@ def mask_span(
         trace_id = _hex_trace_id(span.get("traceId")) or span.get("traceId")
         session_id_for_scope = _first_attr(span, session_attrs)
 
-        def protect(text: str):  # noqa: ANN001 - closure over span identifiers
+        def protect(text: str):
             return pipeline.protect(text, trace_id=trace_id, session_id=session_id_for_scope)
 
     trace_id = _hex_trace_id(span.get("traceId")) or span.get("traceId")
@@ -329,7 +330,7 @@ def mask_resource_attrs(
 ) -> None:
     """Mask content attributes on the outer resource envelope."""
     if protect is None:
-        def protect(text: str):  # noqa: ANN001 - closure over identifiers
+        def protect(text: str):
             return pipeline.protect(text, trace_id=trace_id, session_id=session_id)
 
     for attr in _as_dicts(resource.get("attributes")):
@@ -352,7 +353,7 @@ def mask_scope(
 ) -> None:
     """Mask scope-level name/version if they match content prefixes."""
     if protect is None:
-        def protect(text: str):  # noqa: ANN001 - closure over identifiers
+        def protect(text: str):
             return pipeline.protect(text, trace_id=trace_id, session_id=session_id)
 
     for field in ("name", "version"):
@@ -543,7 +544,7 @@ def _decode_protobuf(message: bytes) -> JsonDict:
     request = ExportTraceServiceRequest()
     try:
         request.ParseFromString(message)
-    except Exception as exc:  # noqa: BLE001 - reported as a payload error
+    except Exception as exc:
         raise GatewayPayloadError(f"无法解析 OTLP/Protobuf 请求体: {exc}") from exc
 
     payload = MessageToDict(

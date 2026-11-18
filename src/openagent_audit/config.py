@@ -8,10 +8,9 @@ hard-codes a compliance decision.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
-
 
 # The audit plane has exactly two roles: ordinary staff (masked data only) and
 # an administrator who can reveal originals after a step-up login.
@@ -235,7 +234,7 @@ class Settings:
 
     # ------------------------------------------------------------------
     @staticmethod
-    def from_env(env: Mapping[str, str] | None = None) -> "Settings":
+    def from_env(env: Mapping[str, str] | None = None) -> Settings:
         e = os.environ if env is None else env
         return Settings(
             env=e.get("AUDIT_ENV", "dev"),

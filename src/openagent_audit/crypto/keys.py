@@ -57,7 +57,7 @@ class LocalKeyProvider:
         self._key = key
 
     @classmethod
-    def from_file(cls, path: str, passphrase: str | None = None) -> "LocalKeyProvider":
+    def from_file(cls, path: str, passphrase: str | None = None) -> LocalKeyProvider:
         with open(path, "rb") as fh:
             pem = fh.read()
         return cls(pem, passphrase.encode("utf-8") if passphrase else None)

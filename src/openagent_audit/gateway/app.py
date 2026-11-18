@@ -22,10 +22,10 @@ and the ciphertext vault are shared with the Python agent path.
 
 from __future__ import annotations
 
-import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -39,7 +39,11 @@ from openagent_audit.gateway.otlp import (
     iter_spans,
     process_otlp_payload,
 )
-from openagent_audit.pii.engine import DetectionEngine, RuleBasedEngine, create_engine, PresidioEngine
+from openagent_audit.pii.engine import (
+    DetectionEngine,
+    PresidioEngine,
+    RuleBasedEngine,
+)
 from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
 from openagent_audit.tls import httpx_tls_kwargs
 from openagent_audit.tracing.drop_monitor import DropMonitor
@@ -185,7 +189,7 @@ def _forward_via_httpx(settings: Settings, payload: bytes) -> None:
             last_error = RuntimeError(
                 f"langfuse responded {resp.status_code}: {resp.text[:200]}"
             )
-        except Exception as exc:  # noqa: BLE001 - retried below
+        except Exception as exc:
             last_error = exc
         if attempt < 2:
             time.sleep(min(0.5 * (2**attempt), 4.0))
@@ -318,7 +322,7 @@ def create_gateway_app(deps: GatewayDeps | None = None) -> FastAPI:
                 agent_attrs=settings.gateway_agent_attrs,
                 on_batch_masked=_count_spans(deps),
             )
-        except Exception as exc:  # noqa: BLE001 - fail-closed by design
+        except Exception as exc:
             # fail-closed: masking/vault failure -> drop the batch, never forward
             counters.record_batch_dropped()
             deps.drop_monitor.record_batch_dropped()
@@ -333,7 +337,7 @@ def create_gateway_app(deps: GatewayDeps | None = None) -> FastAPI:
 
         try:
             deps.forwarder(encode_otlp_json(payload))
-        except Exception as exc:  # noqa: BLE001 - masked data only, counted
+        except Exception as exc:
             # masked data only — losing it is an observability loss, not a leak
             counters.record_forward_failure(str(exc))
             return JSONResponse(

@@ -18,7 +18,7 @@ the configured name and finally to UTC.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 
 # Fallback offsets for the zones we can reasonably guess from a name such as
 # "Asia/Shanghai" or "UTC+8" when no tz database is available.
@@ -45,13 +45,13 @@ def resolve_timezone(name: str | None) -> tzinfo:
     we ship with, a literal ``UTC+8`` style name, then UTC.
     """
     if not name:
-        return timezone.utc
+        return UTC
 
     try:
         from zoneinfo import ZoneInfo
 
         return ZoneInfo(name)
-    except Exception:  # noqa: BLE001 - package missing or unknown zone
+    except Exception:
         pass
 
     key = name.strip().lower()
@@ -65,7 +65,7 @@ def resolve_timezone(name: str | None) -> tzinfo:
         minutes = int(match.group(3) or 0)
         return timezone(sign * timedelta(hours=hours, minutes=minutes), name=name)
 
-    return timezone.utc
+    return UTC
 
 
 def to_display(value: datetime | None, tz: tzinfo) -> datetime | None:
@@ -76,7 +76,7 @@ def to_display(value: datetime | None, tz: tzinfo) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+        value = value.replace(tzinfo=UTC)
     return value.astimezone(tz)
 
 

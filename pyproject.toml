@@ -48,3 +48,20 @@ testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E9/F：语法错误与死代码（真正的 bug 级问题）；I：导入排序。
+# 其余风格类规则（行长、Unicode 歧义、SIM/FURB/BLE）不启用：中文项目的
+# RUF001-003 全角字符误报与边界层容错模式属于刻意设计。
+select = ["E9", "F", "I", "RUF100", "W292"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# 冒烟脚本与演示数据：环境变量必须先于 openagent_audit 导入（刻意模式）
+"scripts/smoke_e2e.py" = ["E402"]
+"scripts/smoke_gateway_otlp.py" = ["E402"]
+"src/openagent_audit/services/demo_seed.py" = ["E402"]

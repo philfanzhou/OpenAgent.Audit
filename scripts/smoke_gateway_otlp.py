@@ -25,7 +25,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from tests.conftest import PASSPHRASE, generate_keypair  # noqa: E402
+from tests.conftest import PASSPHRASE, generate_keypair
 
 GATEWAY_PORT = 8192
 LANGFUSE_PORT = 8193
@@ -66,7 +66,7 @@ class FakeLangfuse:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 length = int(self.headers.get("Content-Length", "0"))
                 raw = self.rfile.read(length)
                 if self.path != "/api/public/otel/v1/traces":

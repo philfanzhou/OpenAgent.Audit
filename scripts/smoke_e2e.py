@@ -6,7 +6,6 @@ real HTTP — audit-api -> decrypt-svc network path included.
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import pathlib
@@ -22,7 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-from tests.conftest import PASSPHRASE, generate_keypair  # noqa: E402
+from tests.conftest import PASSPHRASE, generate_keypair
 
 
 def wait_ready(url: str, timeout: float = 30.0) -> None:
@@ -116,8 +115,8 @@ def main() -> int:
 
         # A browser session is a cookie; use cookies explicitly here because
         # the two-step admin login depends on it.
-        from http.cookiejar import CookieJar
         import urllib.request
+        from http.cookiejar import CookieJar
 
         jar = CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))

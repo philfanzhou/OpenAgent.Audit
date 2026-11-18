@@ -1,4 +1,9 @@
-from openagent_audit.vault.hashchain import GENESIS_HASH, canonical_entry, entry_hash, verify_chain
+from openagent_audit.vault.hashchain import (
+    GENESIS_HASH,
+    canonical_entry,
+    entry_hash,
+    verify_chain,
+)
 from openagent_audit.vault.models import (
     AuditEntry,
     EntityCiphertextRow,
@@ -8,9 +13,9 @@ from openagent_audit.vault.models import (
 from openagent_audit.vault.store import SQLiteAuditDatabase
 
 __all__ = [
+    "GENESIS_HASH",
     "AuditEntry",
     "EntityCiphertextRow",
-    "GENESIS_HASH",
     "RestoreRequest",
     "RestoreStatus",
     "SQLiteAuditDatabase",

@@ -15,9 +15,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def build_langfuse_client(
-    settings: "Settings",
-    pipeline: "MaskingPipeline",
-    drop_monitor: "DropMonitor | None" = None,
+    settings: Settings,
+    pipeline: MaskingPipeline,
+    drop_monitor: DropMonitor | None = None,
     **client_kwargs,
 ):
     """``Langfuse(mask_otel_spans=...)`` with our export-thread hook.

@@ -5,14 +5,19 @@ from openagent_audit.crypto.envelope import (
     KmsEnvelopeCipher,
     RsaEnvelopeCipher,
 )
-from openagent_audit.crypto.keys import KeyProvider, KmsKeyProvider, LocalKeyProvider, generate_keypair
+from openagent_audit.crypto.keys import (
+    KeyProvider,
+    KmsKeyProvider,
+    LocalKeyProvider,
+    generate_keypair,
+)
 
 __all__ = [
     "DecryptionError",
     "EncryptionError",
     "EnvelopeCipher",
-    "KmsEnvelopeCipher",
     "KeyProvider",
+    "KmsEnvelopeCipher",
     "KmsKeyProvider",
     "LocalKeyProvider",
     "RsaEnvelopeCipher",

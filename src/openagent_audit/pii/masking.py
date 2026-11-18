@@ -15,8 +15,8 @@ import secrets
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Callable, Mapping, Sequence
 
 from openagent_audit.crypto.envelope import EnvelopeCipher
 from openagent_audit.pii.engine import DetectionEngine, RuleBasedEngine
@@ -94,7 +94,7 @@ class EntityRecord:
     start: int
     end: int
 
-    def redacted(self) -> "EntityRecord":
+    def redacted(self) -> EntityRecord:
         """Copy safe to hand to anything that might be logged or serialized."""
         return EntityRecord(self.entity_id, self.entity_type, "", self.mask, "", self.start, self.end)
 
@@ -163,7 +163,7 @@ class VaultWriter:
             try:
                 self._vault.insert_entities(list(rows))
                 return
-            except Exception as exc:  # noqa: BLE001 - retried below
+            except Exception as exc:
                 last_error = exc
                 if attempt + 1 < self._attempts:
                     time.sleep(min(0.5 * (2**attempt), 4.0))  # bounded backoff
@@ -186,7 +186,7 @@ class protect_batch:
             batch.protect(text_b)      # all rows flushed together
     """
 
-    def __init__(self, pipeline: "MaskingPipeline", *, trace_id=None, session_id=None) -> None:
+    def __init__(self, pipeline: MaskingPipeline, *, trace_id=None, session_id=None) -> None:
         self._pipeline = pipeline
         self._trace_id = trace_id
         self._session_id = session_id
@@ -195,7 +195,7 @@ class protect_batch:
 
     def protect(self, text: str) -> ProtectResult:
         """Mask *text* without persisting anything yet."""
-        result = self._pipeline._protect_local(text)  # noqa: SLF001 - same module
+        result = self._pipeline._protect_local(text)
         self._results.append(result)
         for record in result.entities:
             self._rows.append(
@@ -211,12 +211,12 @@ class protect_batch:
 
     def flush(self) -> None:
         """Persist every collected row in one atomic write."""
-        writer = self._pipeline._vault_writer  # noqa: SLF001
-        if self._rows and writer is not None and self._pipeline._cipher is not None:  # noqa: SLF001
+        writer = self._pipeline._vault_writer
+        if self._rows and writer is not None and self._pipeline._cipher is not None:
             writer.write(self._rows)
             self._rows = []
 
-    def __enter__(self) -> "protect_batch":
+    def __enter__(self) -> protect_batch:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

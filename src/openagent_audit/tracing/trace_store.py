@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Protocol, Sequence
+from datetime import UTC, datetime
+from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -283,7 +283,6 @@ class LangfuseTraceStore:
         paging until the cursor is *absent* — terminating on an empty page
         would silently truncate large result sets.
         """
-        from datetime import timezone
 
         rows: list[dict] = []
         cursor: str | None = None
@@ -297,9 +296,9 @@ class LangfuseTraceStore:
             if trace_id:
                 params["traceId"] = trace_id
             if from_ts is not None:
-                params["fromStartTime"] = from_ts.astimezone(timezone.utc).isoformat()
+                params["fromStartTime"] = from_ts.astimezone(UTC).isoformat()
             if to_ts is not None:
-                params["toStartTime"] = to_ts.astimezone(timezone.utc).isoformat()
+                params["toStartTime"] = to_ts.astimezone(UTC).isoformat()
             if cursor:
                 params["cursor"] = cursor
 
@@ -518,7 +517,7 @@ class LangfuseTraceStore:
             # 与 _trace_from_dict 一致：剥掉网关打的 "agent:" 前缀，
             # 会话列表显示干净的 agent 标识。
             entry["agent_tags"].update(
-                t[len("agent:"):] if t.startswith("agent:") else t
+                t.removeprefix("agent:")
                 for t in tags if isinstance(t, str)
             )
         return [
@@ -565,7 +564,7 @@ class LangfuseTraceStore:
                     continue
                 try:
                     self.delete_trace(trace_id)
-                except Exception:  # noqa: BLE001 - skip and retry next sweep
+                except Exception:
                     seen_failing.add(trace_id)
                     continue
                 deleted.append(trace_id)

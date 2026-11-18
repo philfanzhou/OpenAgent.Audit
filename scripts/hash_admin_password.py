@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from openagent_audit.services.auth import hash_admin_password  # noqa: E402
+from openagent_audit.services.auth import hash_admin_password
 
 
 def main() -> int:

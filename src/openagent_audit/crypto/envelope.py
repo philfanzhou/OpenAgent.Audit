@@ -54,7 +54,7 @@ class RsaEnvelopeCipher:
         self._public_key = public_key
 
     @classmethod
-    def from_public_key_pem(cls, pem: bytes) -> "RsaEnvelopeCipher":
+    def from_public_key_pem(cls, pem: bytes) -> RsaEnvelopeCipher:
         key = serialization.load_pem_public_key(pem)
         if not isinstance(key, rsa.RSAPublicKey):
             raise TypeError(f"expected RSA public key, got {type(key).__name__}")
@@ -123,9 +123,9 @@ class RsaEnvelopeCipher:
 
     # decrypt-svc wires the private key in after construction; the write side
     # (Agents) never configures one.
-    _key_provider: "KeyProviderLike" = None  # type: ignore[assignment]
+    _key_provider: KeyProviderLike = None  # type: ignore[assignment]
 
-    def bind_key_provider(self, key_provider: "KeyProviderLike") -> None:
+    def bind_key_provider(self, key_provider: KeyProviderLike) -> None:
         self._key_provider = key_provider
 
 

@@ -19,18 +19,23 @@ decrypt service's response, and every access is logged.
 from __future__ import annotations
 
 import html
-import re
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import os
-from pathlib import Path
+import re
 import secrets
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
-from fastapi.responses import JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from openagent_audit.bootstrap import (
@@ -46,22 +51,30 @@ from openagent_audit.services.auth import (
     ROLE_ADMIN,
     ROLE_LABELS,
     ROLE_USER,
+    VIEW_AUDIT_LOG,
+    VIEW_MASKED,
+    VIEW_METRICS,
     AuthenticationError,
     AuthorizationError,
     IdentityResolver,
     Principal,
     SessionStore,
-    VIEW_AUDIT_LOG,
-    VIEW_MASKED,
-    VIEW_METRICS,
     check,
     verify_password_hash,
 )
-from openagent_audit.services.decrypt_client import HttpDecryptService, InProcessDecryptService
+from openagent_audit.services.decrypt_client import (
+    HttpDecryptService,
+    InProcessDecryptService,
+)
 from openagent_audit.services.reveal_service import RevealError, RevealService
-from openagent_audit.services.sso import SsoClient, SsoError, sign_state_cookie, verify_state_cookie
-from openagent_audit.tls import httpx_tls_kwargs, warn_if_verification_disabled
+from openagent_audit.services.sso import (
+    SsoClient,
+    SsoError,
+    sign_state_cookie,
+    verify_state_cookie,
+)
 from openagent_audit.timezone_display import resolve_timezone, to_display, zone_label
+from openagent_audit.tls import httpx_tls_kwargs, warn_if_verification_disabled
 from openagent_audit.tracing.drop_monitor import DropMonitor
 from openagent_audit.tracing.trace_store import LangfuseTraceStore, LocalTraceStore
 
@@ -108,7 +121,7 @@ class AppContainer:
     drop_monitor: DropMonitor = field(default_factory=DropMonitor)
     sso: SsoClient | None = None
     # Display timezone: entries are stored in UTC and rendered in this zone.
-    display_tz: object = field(default_factory=lambda: timezone.utc)
+    display_tz: object = field(default_factory=lambda: UTC)
 
 
 def build_container(settings: Settings) -> AppContainer:
@@ -241,7 +254,7 @@ def search_sessions(
 
     def sort_key(session: dict):
         return session.get("last_ts") or session.get("first_ts") or datetime.min.replace(
-            tzinfo=timezone.utc
+            tzinfo=UTC
         )
 
     sessions = sorted(sessions, key=sort_key, reverse=True)
@@ -349,7 +362,7 @@ def display_range_to_utc(
             ) from exc
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=tz)
-        return parsed.astimezone(timezone.utc)
+        return parsed.astimezone(UTC)
 
     return parse(from_ts), parse(to_ts)
 
@@ -1368,11 +1381,11 @@ def _build_inventory(container: AppContainer) -> dict:
     inventory: dict = {}
     try:
         inventory["vault_entities"] = container.db.count_entities()
-    except Exception:  # noqa: BLE001 - informational only
+    except Exception:
         inventory["vault_entities"] = None
     try:
         inventory["audit_entries"] = container.db.count_audit_entries()
-    except Exception:  # noqa: BLE001
+    except Exception:
         inventory["audit_entries"] = None
     try:
         sessions = (
@@ -1382,7 +1395,7 @@ def _build_inventory(container: AppContainer) -> dict:
         )
         inventory["sessions"] = len(sessions)
         inventory["traces"] = sum(s.get("trace_count", 0) for s in sessions)
-    except Exception:  # noqa: BLE001
+    except Exception:
         inventory["sessions"] = None
         inventory["traces"] = None
     return inventory

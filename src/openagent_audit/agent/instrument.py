@@ -17,7 +17,9 @@ thread, fail-closed. ``AgentInstrument`` works against any ``TraceSink``
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from datetime import UTC
+from typing import Protocol
 
 from openagent_audit.media.service import MediaReference, MediaService
 
@@ -32,7 +34,7 @@ class TraceSink(Protocol):
 
     def start_trace(
         self, name: str, *, session_id: str, user_id: str, agent_tag: str, trace_id: str
-    ) -> "TraceHandle": ...
+    ) -> TraceHandle: ...
 
 
 class TraceHandle(Protocol):
@@ -51,7 +53,7 @@ class LocalTraceSink:
         self._store = store
 
     def start_trace(self, name, *, session_id, user_id, agent_tag, trace_id):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from openagent_audit.tracing.trace_store import ObservationRecord, TraceRecord
 
@@ -70,7 +72,7 @@ class LocalTraceSink:
 
         class _Trace:
             def __init__(self) -> None:
-                self._ts = datetime.now(timezone.utc)
+                self._ts = datetime.now(UTC)
 
             def add_span(self, name, *, input=None, output=None):
                 rec = ObservationRecord(id=f"span-{len(observations)}", type="span", name=name,

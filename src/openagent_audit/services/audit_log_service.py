@@ -6,15 +6,15 @@ the Loki copy exists purely for real-time alerting (e.g. decrypt bursts).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
 
 from openagent_audit.alerts.loki import NullLokiClient
 from openagent_audit.vault.models import AuditEntry
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class AuditLogService:

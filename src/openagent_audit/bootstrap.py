@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from openagent_audit.config import Settings, sqlite_path_from_url
 from openagent_audit.crypto.envelope import RsaEnvelopeCipher
-from openagent_audit.crypto.keys import KeyProvider, KmsKeyProvider, LocalKeyProvider, load_public_key
+from openagent_audit.crypto.keys import (
+    KeyProvider,
+    KmsKeyProvider,
+    LocalKeyProvider,
+    load_public_key,
+)
 from openagent_audit.tls import httpx_tls_kwargs
 
 

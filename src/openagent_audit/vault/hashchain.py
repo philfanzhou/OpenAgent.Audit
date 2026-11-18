@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from datetime import datetime
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 GENESIS_HASH = "0" * 64
 

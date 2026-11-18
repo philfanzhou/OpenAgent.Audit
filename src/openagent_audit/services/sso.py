@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass, field
-import json
 from urllib.parse import urlencode
 
 from authlib.integrations.httpx_client import AsyncOAuth2Client
@@ -147,7 +147,7 @@ class SsoClient:
             return response.json()
         except SsoError:
             raise
-        except Exception as exc:  # noqa: BLE001 - network failure degrades to login page
+        except Exception as exc:
             raise SsoError("SSO 服务暂时不可达，请稍后重试或使用测试账号。") from exc
         finally:
             if own:
@@ -203,7 +203,6 @@ class SsoClient:
         discovery = await self._discovery()
         redirect_uri = self._redirect_uri(base_url)
 
-        import httpx
 
         from openagent_audit.tls import httpx_tls_kwargs
 
@@ -237,7 +236,7 @@ class SsoClient:
                 await oauth.aclose()
         except SsoError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any failure degrades to the login page
+        except Exception as exc:
             raise SsoError("SSO 登录失败，请稍后重试或使用测试账号。") from exc
 
         if response.status_code != 200:

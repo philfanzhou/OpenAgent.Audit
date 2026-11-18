@@ -10,8 +10,8 @@ the only role that reads ciphertext.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Mapping, Sequence
 
 from openagent_audit.vault.hashchain import GENESIS_HASH, canonical_entry, entry_hash
 from openagent_audit.vault.models import (
@@ -68,7 +68,7 @@ class PostgresAuditDatabase:
                 "application roles intentionally have no DDL privileges."
             )
 
-    def init_schema(self) -> None:  # noqa: D401 - kept for API compatibility
+    def init_schema(self) -> None:
         """No-op: DDL is performed by the provisioning script, not at runtime.
 
         Retained so callers written against the SQLite twin still work; it

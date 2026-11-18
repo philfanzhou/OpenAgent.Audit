@@ -9,6 +9,7 @@ encrypts before this layer is involved.
 from __future__ import annotations
 
 import re
+from datetime import UTC
 from pathlib import Path
 from typing import Protocol
 
@@ -96,9 +97,9 @@ class S3ObjectStore:
         validate_key(key)
         extra: dict = {}
         if retention_days is not None:
-            from datetime import datetime, timedelta, timezone
+            from datetime import datetime, timedelta
 
-            until = datetime.now(timezone.utc) + timedelta(days=retention_days)
+            until = datetime.now(UTC) + timedelta(days=retention_days)
             extra["ObjectLockMode"] = "COMPLIANCE"
             extra["ObjectLockRetainUntilDate"] = until
         self._client.put_object(Bucket=self._bucket, Key=key, Body=data, **extra)

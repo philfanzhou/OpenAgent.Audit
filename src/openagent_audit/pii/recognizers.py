@@ -15,8 +15,8 @@ recall, and consider an LLM detector as the final safety net.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, Sequence
 
 # ---------------------------------------------------------------------------
 # Normalization (length-preserving)
@@ -263,7 +263,7 @@ _NAME_AFTER = r"(?=先生|女士|经理|老师|同学|工程师|主任)"
 # capture is a common noun, not a person's name.
 _NON_NAME_WORDS: frozenset[str] = frozenset({
     "电话", "手机", "号码", "邮箱", "邮件", "地址", "地点", "公司", "部门", "单位",
-    "客户", "用户", "业务", "部门", "合同", "订单", "账号", "帐号", "密码", "验证",
+    "客户", "用户", "业务", "合同", "订单", "账号", "帐号", "密码", "验证",
     "资料", "信息", "相关", "负责", "人员", "同事", "领导", "上级", "下级", "财务",
     "人事", "行政", "技术", "产品", "运营", "市场", "销售", "客服", "售后", "服务",
     "系统", "平台", "应用", "接口", "数据", "报表", "文档", "文件", "图片", "视频",

@@ -102,7 +102,7 @@ class RevealService:
                 extra={"reason": "not_found"},
             )
             raise RevealError("not_found", "密文中不存在该实体编号。", 404) from None
-        except Exception as exc:  # noqa: BLE001 - reported, then re-raised as a reveal error
+        except Exception as exc:
             self._record(
                 action="ENTITY_REVEAL_FAILED",
                 actor=actor,
@@ -141,7 +141,7 @@ class RevealService:
         """Best-effort metadata lookup; the plaintext path does not depend on it."""
         try:
             return self._vault.get_entity(entity_id)
-        except Exception:  # noqa: BLE001 - metadata is informative only
+        except Exception:
             return None
 
     def _record(

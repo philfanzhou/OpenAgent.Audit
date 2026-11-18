@@ -8,7 +8,7 @@ can alert.
 
 from __future__ import annotations
 
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
 
 from openagent_audit.pii.masking import MaskingPipeline
 from openagent_audit.tracing.drop_monitor import DropMonitor
@@ -67,7 +67,7 @@ def build_mask_otel_spans(
     """
     monitor = drop_monitor if drop_monitor is not None else DropMonitor()
 
-    def mask_otel_spans(*, params):  # noqa: ANN001 - signature fixed by the SDK
+    def mask_otel_spans(*, params):
         try:
             patches = {}
             for identifier, span in params.spans.items():

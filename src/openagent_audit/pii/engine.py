@@ -5,10 +5,12 @@ engine wired exactly as the proposal prescribes (Chinese spaCy model via
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 from openagent_audit.pii.recognizers import (
     DEFAULT_RECOGNIZERS,
+    Recognizer,
     Span,
     resolve_overlaps,
 )

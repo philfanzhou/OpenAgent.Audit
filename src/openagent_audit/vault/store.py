@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 from openagent_audit.vault.hashchain import GENESIS_HASH, canonical_entry, entry_hash
 from openagent_audit.vault.models import (
@@ -25,7 +25,7 @@ from openagent_audit.vault.models import (
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _iso(dt: datetime | None) -> str | None:

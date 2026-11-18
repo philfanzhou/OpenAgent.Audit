@@ -12,9 +12,9 @@ import base64
 import hashlib
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Sequence
+from datetime import UTC, datetime
 
 from openagent_audit.crypto.envelope import EnvelopeCipher
 from openagent_audit.media.objectstore import ObjectStore
@@ -56,7 +56,7 @@ class MediaService:
     # -- ingest --------------------------------------------------------------
     def encrypt_and_upload(self, data: bytes, mime: str) -> MediaReference:
         digest = hashlib.sha256(data).hexdigest()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         key = f"{self._prefix}/{now:%Y/%m}/{uuid.uuid4().hex}.enc"
         sealed = self._cipher.seal(data, aad=key.encode("utf-8"))
         self._store.put(key, sealed.encode("ascii"))
@@ -108,7 +108,7 @@ class MediaService:
                 }
         return message
 
-    def _rewrite_image_url(self, part: dict) -> tuple[dict, "MediaReference | None"]:
+    def _rewrite_image_url(self, part: dict) -> tuple[dict, MediaReference | None]:
         url = (part.get("image_url") or {}).get("url", "")
         match = _DATA_URI_RE.match(url)
         if not match:

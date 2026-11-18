@@ -19,6 +19,8 @@ DEMO_SESSION_PREFIX = "sess-demo-"
 def is_demo_session(session_id: str) -> bool:
     return str(session_id).startswith(DEMO_SESSION_PREFIX)
 
+from datetime import UTC
+
 from openagent_audit.bootstrap import build_cipher
 from openagent_audit.config import Settings
 from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
@@ -120,7 +122,7 @@ def purge_demo_data(store: LocalTraceStore) -> int:
             try:
                 store.delete_trace(trace.trace_id)
                 removed += 1
-            except Exception:  # noqa: BLE001 - best effort, never block reads
+            except Exception:
                 pass
     return removed
 
@@ -128,7 +130,7 @@ def purge_demo_data(store: LocalTraceStore) -> int:
 def seed_demo_data(settings: Settings, store: LocalTraceStore, db) -> int:
     """Seed sample conversations through the real masking pipeline. Returns
     the number of traces written."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     pipeline = MaskingPipeline(
         cipher=build_cipher(settings),
@@ -142,7 +144,7 @@ def seed_demo_data(settings: Settings, store: LocalTraceStore, db) -> int:
     if any(not is_demo_session(t.session_id) for t in existing):
         return 0
     conversations = list(_SEED_CONVERSATIONS) + _bulk_conversations()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     written = 0
     for i, conv in enumerate(conversations):
         masked_in = mask_attribute_map(

@@ -502,14 +502,14 @@ class IdentityResolver:
 
         try:
             response = self._http_get(token)
-        except Exception:  # noqa: BLE001 - unreachable provider fails closed
+        except Exception:
             return None
 
         if getattr(response, "status_code", 0) != 200:
             return None
         try:
             body = response.json()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
         username = _platform_username(body)

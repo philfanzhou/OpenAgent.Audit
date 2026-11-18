@@ -83,7 +83,7 @@ class RetentionJob:
         if self._traces is not None:
             try:
                 expired_traces = list(self._traces.delete_older_than(trace_cutoff))
-            except Exception:  # noqa: BLE001 - reported, never silently ignored
+            except Exception:
                 trace_complete = False
 
         # Vault cleanup is driven by the *cutoff*, not by the list of trace ids
@@ -128,7 +128,6 @@ class RetentionJob:
         than simply taking ``entries[-1].seq``.
         """
         archive_cutoff = now - timedelta(days=self._archive_days)
-        watermark = self._read_watermark()
 
         # Every entry older than the cutoff is potentially due. The watermark tells
         # us which seq values we have already archived, but it cannot be used

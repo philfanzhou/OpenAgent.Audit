@@ -21,7 +21,7 @@ token and refuses anything that does not name an administrator.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Protocol
 
 from fastapi import FastAPI, HTTPException, Request
@@ -107,7 +107,7 @@ def create_decrypt_app(deps: DecryptServiceDeps) -> FastAPI:
 
         try:
             plaintext = deps.cipher.open(row.ciphertext, aad=body.entity_id.encode("ascii"))
-        except Exception:  # noqa: BLE001 - reported as a domain error
+        except Exception:
             _record(deps, body.actor, body.session_user, "DECRYPT_FAILED",
                     body.entity_id, {"reason": "tampered_or_wrong_key"})
             raise HTTPException(status_code=422, detail="解密失败（密文损坏或密钥不匹配）") from None
@@ -124,7 +124,7 @@ def create_decrypt_app(deps: DecryptServiceDeps) -> FastAPI:
 
         try:
             payload = deps.object_store.get(body.object_key)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _record(deps, body.actor, body.session_user, "DECRYPT_FAILED",
                     body.object_key, {"reason": "object_not_found"})
             raise HTTPException(status_code=404, detail="对象不存在") from None
@@ -137,7 +137,7 @@ def create_decrypt_app(deps: DecryptServiceDeps) -> FastAPI:
                 payload.decode("ascii") if isinstance(payload, bytes) else payload,
                 aad=body.object_key.encode("utf-8"),
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             _record(deps, body.actor, body.session_user, "DECRYPT_FAILED",
                     body.object_key, {"reason": "tampered_or_wrong_key"})
             raise HTTPException(status_code=422, detail="解密失败（密文损坏或密钥不匹配）") from None
@@ -154,7 +154,7 @@ def _record(deps: DecryptServiceDeps, actor: str, session_user: str, action: str
     """Append the service-side record. Failure here is fatal for the call."""
     if deps.audit is None:
         return
-    payload = {"session_user": session_user or actor, "decrypted_at": datetime.now(timezone.utc).isoformat()}
+    payload = {"session_user": session_user or actor, "decrypted_at": datetime.now(UTC).isoformat()}
     payload.update(detail or {})
     deps.audit.append(
         actor=actor,

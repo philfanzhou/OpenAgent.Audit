@@ -47,8 +47,8 @@ from openagent_audit.tracing.drop_monitor import DropMonitor
 
 def build_masking_pipeline(settings: Settings, db):
     """Write-side pipeline (cipher + vault writer + rule engine) from settings."""
-    from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
     from openagent_audit.pii.engine import RuleBasedEngine
+    from openagent_audit.pii.masking import MaskingPipeline, VaultWriter
 
     return MaskingPipeline(
         engine=RuleBasedEngine(),
@@ -72,8 +72,6 @@ def attach_openagent(
     Returns an :class:`~openagent_audit.agent.instrument.AgentInstrument`.
     """
     from openagent_audit.agent.instrument import AgentInstrument, LangfuseTraceSink
-    from openagent_audit.tracing.langfuse_setup import build_langfuse_client
-    from openagent_audit.tracing.hook import build_mask_otel_spans
 
     settings = settings or Settings.from_env()
     drop_monitor = drop_monitor or DropMonitor()
