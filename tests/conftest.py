@@ -133,7 +133,7 @@ def container(settings) -> AppContainer:
 def api_client(container):
     from fastapi.testclient import TestClient
 
-    return TestClient(create_audit_app(container))
+    return TestClient(create_audit_app(container), follow_redirects=False)
 
 
 @pytest.fixture()

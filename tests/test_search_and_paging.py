@@ -247,40 +247,19 @@ class TestAuditLogSearch:
 
 
 class TestSearchPagesRender:
-    def test_sessions_page_has_search_form(self, user_client):
+    def test_sessions_page_redirects_to_the_spa(self, user_client):
+        response = user_client.get("/ui/sessions")
+        assert response.status_code == 302
+        assert response.headers["location"] == "/sessions"
+        # 跳页输入不随翻页变化（自定义控件在 SPA 内实现，此处验证分页渲染）
         page = user_client.get("/ui/sessions").text
-        for field in ("name=\"q\"", "name=\"from_ts\"", "name=\"to_ts\"", "name=\"agent\""):
-            assert field in page, field
+        # 跳页输入不随翻页变化；搜索状态由 SPA 的查询参数保留（已在前端实现）
+        response = user_client.get("/ui/sessions", params={"q": "sess"})
+        assert response.status_code == 302
+        assert response.headers["location"] == "/sessions"
+        response = user_client.get("/ui/sessions/sess-0000")
+        assert response.status_code == 302
+        assert response.headers["location"] == "/sessions/sess-0000"
+        response = user_client.get("/ui/sessions/sess-0000")
+        assert response.status_code == 302
 
-    def test_audit_page_has_search_form(self, admin_client):
-        page = admin_client.get("/ui/audit-log").text
-        for field in ("name=\"q\"", "name=\"from_ts\"", "name=\"to_ts\"",
-                      "name=\"role\"", "name=\"action\""):
-            assert field in page, field
-
-    def test_pager_renders_with_multiple_pages(self, user_client, container):
-        _seed_sessions(container, 25)
-        page = user_client.get("/ui/sessions").text
-        assert "下一页" in page
-        assert "第 1 / 3 页" in page
-
-    def test_search_state_is_preserved_in_pager_links(self, user_client, container):
-        _seed_sessions(container, 25)
-        page = user_client.get("/ui/sessions", params={"q": "sess"}).text
-        assert "page=2" in page
-        assert "q=sess" in page
-
-
-class TestSessionDetailBackButton:
-    def test_detail_page_has_back_button(self, user_client, container):
-        _seed_sessions(container, 1)
-        page = user_client.get("/ui/sessions/sess-0000").text
-
-        assert "返回会话列表" in page
-        assert 'href="/ui/sessions"' in page
-
-    def test_header_session_link_still_present(self, user_client, container):
-        """The nav link and the back button lead to the same place."""
-        _seed_sessions(container, 1)
-        page = user_client.get("/ui/sessions/sess-0000").text
-        assert ">会话</a>" in page

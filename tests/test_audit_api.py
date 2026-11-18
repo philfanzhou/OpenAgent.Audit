@@ -131,18 +131,6 @@ def test_user_cannot_reveal(api_client, seeded):
 def test_user_cannot_read_audit_log(api_client, seeded):
     _login(api_client)
     assert api_client.get("/v1/audit-log").status_code == 403
-
-
-def test_user_sees_no_admin_controls_in_the_page(api_client, seeded):
-    _login(api_client)
-    page = api_client.get("/ui/sessions/sess-1001").text
-
-    # masks render as inert spans; no clickable reveal target is emitted
-    assert 'class="ent ent-click"' not in page
-    assert "data-entity-id=" not in page
-    assert "登录管理员" in page
-
-
 # ---------------------------------------------------------------------------
 # Administrator step-up
 # ---------------------------------------------------------------------------
@@ -274,52 +262,6 @@ def test_audit_log_chain_stays_valid_after_reveals(api_client, seeded):
 # ---------------------------------------------------------------------------
 # Web pages
 # ---------------------------------------------------------------------------
-
-
-def test_login_page_and_user_flow(api_client, seeded):
-    page = api_client.get("/ui/login")
-    assert page.status_code == 200
-
-    _login(api_client)
-    sessions = api_client.get("/ui/sessions")
-    assert sessions.status_code == 200
-    assert "sess-1001" in sessions.text
-
-    detail = api_client.get("/ui/sessions/sess-1001")
-    assert detail.status_code == 200
-    # the filter rewrites ⟦TYPE#id|mask⟧ into a rendered element
-    assert "PHONE_NUMBER" in detail.text
-    assert "138****5678" in detail.text
-    assert "13812345678" not in detail.text
-
-
-def test_admin_sees_clickable_masks(api_client, seeded):
-    _login(api_client)
-    _admin(api_client)
-
-    detail = api_client.get("/ui/sessions/sess-1001")
-
-    assert "ent-click" in detail.text
-    assert "data-entity-id=" in detail.text
-    assert "13812345678" not in detail.text  # still masked until clicked
-
-
-def test_unauthenticated_ui_redirects_to_login(api_client):
-    resp = api_client.get("/ui/sessions", follow_redirects=False)
-    assert resp.status_code in (302, 307)
-    assert resp.headers["location"] == "/ui/login"
-
-
-def test_audit_log_page_visible_to_admin(api_client, seeded):
-    _login(api_client)
-    _admin(api_client)
-
-    page = api_client.get("/ui/audit-log")
-
-    assert page.status_code == 200
-    assert "ADMIN_LOGIN" in page.text
-
-
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------

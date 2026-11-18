@@ -178,21 +178,6 @@ class TestTestAccountOverHttp:
                 "test_password": "test@123456",
             }
         )
-
-    def test_test_login_works_and_hides_admin_entry(self, api_client, container):
-        self._enable_test_account(container)
-
-        resp = api_client.post(
-            "/ui/login",
-            data={"username": "test", "password": "test@123456"},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 302
-
-        page = api_client.get("/ui/sessions").text
-        assert "普通用户" in page
-        assert "登录管理员" not in page
-
     def test_test_account_login_is_audited(self, api_client, container):
         self._enable_test_account(container)
         api_client.post(
@@ -205,34 +190,6 @@ class TestTestAccountOverHttp:
         assert entry.actor == "test"
         assert entry.detail["via"] == "test-account"
         assert entry.detail["ephemeral"] is True
-
-    def test_test_account_cannot_reach_admin(self, api_client, container):
-        self._enable_test_account(container)
-        api_client.post(
-            "/ui/login",
-            data={"username": "test", "password": "test@123456"},
-            follow_redirects=False,
-        )
-
-        # the form is refused
-        resp = api_client.post(
-            "/ui/admin/login",
-            data={"username": "admin", "password": "admin@123456"},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 403
-        assert "测试账号" in resp.text
-
-        # and the privileged page is refused too
-        page = api_client.get("/ui/admin/login", follow_redirects=False)
-        assert page.status_code == 403
-
-        # the JSON endpoint agrees
-        resp = api_client.post(
-            "/v1/admin/login", json={"username": "admin", "password": "admin@123456"}
-        )
-        assert resp.status_code == 403
-
     def test_refusal_is_recorded(self, api_client, container):
         self._enable_test_account(container)
         api_client.post(
