@@ -15,13 +15,13 @@
   <a class="btn" href="/ui/sessions">← 返回会话列表</a>
 </div>
 {% for t in traces %}
-<div class="card">
+<div class="card trace-card">
   <p style="margin:0 0 4px"><span class="pill b3">trace</span> <code>{{ t.trace_id }}</code>
      <span class="muted">{{ t.timestamp|tsformat }}</span></p>
   <p class="muted" style="margin:0 0 12px">用户 <code>{{ t.user_id }}</code> · {{ t.agent_tag }} · {{ t.name }}</p>
   {% for o in t.observations %}
     <p style="margin:8px 0 2px">
-      <span class="pill {{ 'ok' if o.type == 'generation' else 'mute' }}">{{ o.type }}</span>
+      <span class="pill {{ "ok" if o.type == "generation" else ("tool" if o.type == "tool" else "mute") }}">{{ o.type }}</span>
       <strong>{{ o.name }}</strong>
       {% if o.model %}<span class="muted">{{ o.model }}</span>{% endif %}
       {% if o.usage %}<span class="muted">{{ o.usage }}</span>{% endif %}

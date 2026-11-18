@@ -1,4 +1,4 @@
-{# Shared pager: 10 rows per page, at most 20 pages. #}
+{# Shared pager: 10 rows per page, at most 20 pages. Centered, with a page jump. #}
 {% if total_pages > 1 %}
 <nav class="pager">
   {% if page > 1 %}
@@ -8,7 +8,22 @@
   {% if page < total_pages %}
     <a class="btn" href="{{ pager_base }}page={{ page + 1 }}{{ pager_query }}">下一页</a>
   {% endif %}
+  <form class="pager-jump" onsubmit="return jumpToPage(this)">
+    <label for="jump-page">跳至</label>
+    <input id="jump-page" type="number" min="1" max="{{ total_pages }}" placeholder="{{ page }}" aria-label="目标页码">
+    <button class="btn" type="submit">跳转</button>
+  </form>
 </nav>
+<script>
+function jumpToPage(form) {
+  var n = parseInt(form.page.value, 10);
+  var total = {{ total_pages }};
+  if (!n || n < 1) n = 1;
+  if (n > total) n = total;
+  location.href = {{ pager_base | tojson }} + 'page=' + n + {{ pager_query | tojson }};
+  return false;
+}
+</script>
 {% endif %}
 {% if truncated %}
 <div class="notice">
