@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
@@ -249,6 +250,10 @@ class LangfuseTraceStore:
         self, base_url: str, public_key: str, secret_key: str,
         client=None, tls: dict | None = None,
     ) -> None:
+        self._sessions_cache: list[dict] | None = None
+        self._sessions_cache_at: float | None = None
+        self._sessions_cache_lock = threading.Lock()
+        self._sessions_cache_ttl = 30.0  # 秒；审计台翻页不需要强一致
         if client is not None:
             self._client = client
         else:
@@ -473,6 +478,35 @@ class LangfuseTraceStore:
         *,
         max_pages: int = 1000,
     ) -> list[dict]:
+        """全量会话聚合，带 30 秒 TTL 缓存。
+
+        无时间过滤的列表是审计台每次翻页都要用的热点路径，而 Langfuse 侧的
+        聚合需要分页拉取全部 observations（秒级）。缓存让翻页/跳页毫秒级响应；
+        新会话最多延迟一个 TTL 可见，审计台可接受。时间过滤请求直接透传
+        Langfuse（不同窗口结果不同，不缓存）。
+        """
+        if from_ts is not None or to_ts is not None:
+            return self._list_sessions_uncached(
+                from_ts=from_ts, to_ts=to_ts, max_pages=max_pages
+            )
+        with self._sessions_cache_lock:
+            cached = self._sessions_cache
+            age = None if self._sessions_cache_at is None else time.monotonic() - self._sessions_cache_at
+        if cached is not None and age is not None and age < self._sessions_cache_ttl:
+            return [dict(s) for s in cached]
+        sessions = self._list_sessions_uncached(from_ts=None, to_ts=None, max_pages=max_pages)
+        with self._sessions_cache_lock:
+            self._sessions_cache = sessions
+            self._sessions_cache_at = time.monotonic()
+        return [dict(s) for s in sessions]
+
+    def _list_sessions_uncached(
+        self,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
+        *,
+        max_pages: int = 1000,
+    ) -> list[dict]:
         """Aggregate sessions from the v2 observations API.
 
         Time filtering is pushed down to the API (``fromStartTime`` /
@@ -572,3 +606,4 @@ class LangfuseTraceStore:
             if not progressed:
                 break
         return deleted
+
