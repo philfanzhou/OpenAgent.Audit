@@ -843,11 +843,15 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         response.delete_cookie(_SESSION_COOKIE)
         return response
 
-    @app.get("/ui", response_class=HTMLResponse)
+    @app.get("/ui")
+    def ui_redirect_root():
+        return RedirectResponse("/sessions", status_code=302)
     def ui_index(request: Request):
         return RedirectResponse("/ui/sessions", status_code=302)
 
     @app.get("/ui/login", response_class=HTMLResponse)
+    def ui_login_redirect():
+        return RedirectResponse("/login", status_code=302)
     async def ui_login(request: Request):
         """Login page: enterprise SSO as the primary path, test account as the fallback."""
         return render(
@@ -1179,6 +1183,8 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return RedirectResponse("/ui/sessions", status_code=302)
 
     @app.get("/ui/admin/login", response_class=HTMLResponse)
+    def ui_admin_login_redirect():
+        return RedirectResponse("/sessions", status_code=302)
     def ui_admin_login_page(request: Request):
         session = container.sessions.get(request.cookies.get(_SESSION_COOKIE))
         if session is None:
@@ -1217,6 +1223,8 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return RedirectResponse("/ui/sessions", status_code=302)
 
     @app.get("/ui/sessions", response_class=HTMLResponse)
+    def ui_sessions_redirect():
+        return RedirectResponse("/sessions", status_code=302)
     def ui_sessions(
         request: Request,
         q: str | None = None,
@@ -1249,6 +1257,8 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         )
 
     @app.get("/ui/sessions/{session_id}", response_class=HTMLResponse)
+    def ui_session_detail_redirect(session_id: str):
+        return RedirectResponse(f"/sessions/{session_id}", status_code=302)
     def ui_session_detail(
         session_id: str, request: Request, from_ts: str | None = None, to_ts: str | None = None
     ):
@@ -1270,6 +1280,8 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         )
 
     @app.get("/ui/audit-log", response_class=HTMLResponse)
+    def ui_audit_log_redirect():
+        return RedirectResponse("/audit-log", status_code=302)
     def ui_audit_log(
         request: Request,
         q: str | None = None,

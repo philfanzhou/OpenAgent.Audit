@@ -73,7 +73,7 @@ def sso_app(tmp_path, keypair):
 
 
 class TestLoginPageStructure:
-    def test_sso_button_and_test_form(self, tmp_path, keypair):
+    def test_login_page_redirects_to_the_spa(self, tmp_path, keypair):
         container = _make_app(
             tmp_path, keypair,
             sso_authority="https://sso.example.com",
@@ -84,29 +84,20 @@ class TestLoginPageStructure:
 
         client = TestClient(create_audit_app(container))
 
-        page = client.get("/ui/login").text
-
-        assert "用企业账号登录" in page
-        assert 'href="/ui/login/sso/start"' in page
-        # the test form is a separate <form> inside its own <details>
-        assert 'name="username"' in page
-        assert 'name="password"' in page
-
-    def test_test_section_collapsed_by_default(self, tmp_path, keypair):
-        container = _make_app(
-            tmp_path, keypair,
-            sso_authority="https://sso.example.com",
-            sso_client_id="openagent-audit",
-            sso_client_secret="s3cret",
-        )
+        response = client.get("/ui/login", follow_redirects=False)
+        # 页面路由整体 302 到 Element Plus SPA 登录页
+        assert response.status_code == 302
+        assert response.headers["location"] == "/login"
+    def test_login_page_redirects_when_sso_disabled(self, tmp_path, keypair):
+        container = _make_app(tmp_path, keypair)  # 无 SSO 配置
         from fastapi.testclient import TestClient
 
         client = TestClient(create_audit_app(container))
-        page = client.get("/ui/login").text
 
-        assert '<details id="test-login">' in page
-        assert '<details id="test-login" open>' not in page
-
+        response = client.get("/ui/login", follow_redirects=False)
+        # 无 SSO 配置同样 302 到 SPA（测试账号表单在 SPA 内）
+        assert response.status_code == 302
+        assert response.headers["location"] == "/login"
     def test_test_section_opens_after_an_error(self, tmp_path, keypair):
         container = _make_app(tmp_path, keypair)
         from fastapi.testclient import TestClient
@@ -119,17 +110,15 @@ class TestLoginPageStructure:
 
         assert '<details id="test-login" open>' in page
 
-    def test_sso_disabled_hides_the_button(self, tmp_path, keypair):
+    def test_login_page_redirects_even_without_sso(self, tmp_path, keypair):
         container = _make_app(tmp_path, keypair, sso_client_id="")
         from fastapi.testclient import TestClient
 
         client = TestClient(create_audit_app(container))
-        page = client.get("/ui/login").text
 
-        assert "用企业账号登录" not in page
-        assert "用测试账号登录" in page
-
-
+        response = client.get("/ui/login", follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers["location"] == "/login"
 class TestTestAccountLogin:
     def test_correct_credentials_sign_in(self, tmp_path, keypair):
         container = _make_app(tmp_path, keypair)
@@ -311,20 +300,15 @@ class TestSsoRoundTrip:
 
     def test_sso_failure_lands_on_the_login_page(self, tmp_path, keypair):
         container = _make_app(tmp_path, keypair)
-        # point the client at an unreachable SSO (no mocked transport)
-        from openagent_audit.services.sso import SsoClient
-
-        container.sso = SsoClient(container.settings)  # authority is example.com
+        # SSO 未配置时 start 直接 302 回登录页（登录页的 SSO 按钮也不会渲染）
         from fastapi.testclient import TestClient
 
         client = TestClient(create_audit_app(container))
 
-        page = client.get("/ui/login/sso/start")
+        response = client.get("/ui/login/sso/start", follow_redirects=False)
 
-        # discovery fails; the page explains and keeps the test form available
-        assert page.status_code in (200, 502)
-        assert "name=\"username\"" in page.text
-
+        assert response.status_code == 302
+        assert response.headers["location"] == "/ui/login"
     def test_automatic_login_grants_no_admin(self, sso_app):
         container, mock = sso_app
         from fastapi.testclient import TestClient
@@ -341,3 +325,4 @@ class TestSsoRoundTrip:
 
         assert client.get("/v1/audit-log").status_code == 403
         assert client.post("/v1/reveal/deadbeefdeadbeef").status_code == 403
+
