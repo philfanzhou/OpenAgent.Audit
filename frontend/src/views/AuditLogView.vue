@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { auth } from '../store'
 
@@ -16,6 +17,7 @@ const q = ref('')
 const range = ref(null)
 const role = ref('')
 const action = ref('')
+const jumpTo = ref('')
 
 const fromTs = computed(() => (range.value?.[0] ?? ''))
 const toTs = computed(() => (range.value?.[1] ?? ''))
@@ -57,7 +59,13 @@ function reset() {
   load()
 }
 
-function jumpPage(n) {
+function jump() {
+  const n = parseInt(jumpTo.value, 10)
+  if (!n || n < 1 || n > totalPages.value) {
+    ElMessage.warning(`请输入 1 ~ ${totalPages.value} 之间的页码`)
+    return
+  }
+  jumpTo.value = ''
   page.value = n
   load()
 }
@@ -161,10 +169,16 @@ onMounted(() => {
         v-model:current-page="page"
         :total="total"
         :page-size="10"
-        layout="prev, pager, next, jumper"
+        layout="prev, pager, next"
         background
-        @current-change="jumpPage"
+        @current-change="load"
       />
+      <form class="jump-form" @submit.prevent="jump">
+        <span class="jump-label">跳至第</span>
+        <el-input v-model="jumpTo" class="jump-input" placeholder="页码" @keyup.enter="jump" />
+        <span class="jump-label">页</span>
+        <el-button type="primary" plain size="small" native-type="submit">跳转</el-button>
+      </form>
     </div>
   </div>
 </template>
@@ -179,5 +193,10 @@ onMounted(() => {
 .text-secondary { color: #64748b; }
 .text-muted { color: #94a3b8; }
 .detail { word-break: break-all; color: #475569; font-size: 12px; }
-.pager-wrap { display: flex; justify-content: center; margin-top: 20px; }
+.pager-wrap { display: flex; justify-content: center; align-items: center;
+  gap: 10px; margin-top: 20px; }
+.jump-form { display: flex; align-items: center; gap: 4px; }
+.jump-label { font-size: 13px; color: #475569; }
+.jump-input { width: 64px; }
+.jump-input :deep(.el-input__inner) { text-align: center; }
 </style>

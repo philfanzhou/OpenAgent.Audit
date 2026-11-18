@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { api } from '../api'
 
 const loading = ref(true)
@@ -14,6 +15,7 @@ const zoneLabel = ref('CST+08:00')
 const q = ref('')
 const range = ref(null) // [start, end] 来自日期范围选择器
 const agent = ref('')
+const jumpTo = ref('')
 
 const fromTs = computed(() => (range.value?.[0] ?? ''))
 const toTs = computed(() => (range.value?.[1] ?? ''))
@@ -53,7 +55,13 @@ function reset() {
   load()
 }
 
-function jumpPage(n) {
+function jump() {
+  const n = parseInt(jumpTo.value, 10)
+  if (!n || n < 1 || n > totalPages.value) {
+    ElMessage.warning(`请输入 1 ~ ${totalPages.value} 之间的页码`)
+    return
+  }
+  jumpTo.value = ''
   page.value = n
   load()
 }
@@ -149,10 +157,16 @@ onMounted(load)
         v-model:current-page="page"
         :total="total"
         :page-size="10"
-        layout="prev, pager, next, jumper"
+        layout="prev, pager, next"
         background
-        @current-change="jumpPage"
+        @current-change="load"
       />
+      <form class="jump-form" @submit.prevent="jump">
+        <span class="jump-label">跳至第</span>
+        <el-input v-model="jumpTo" class="jump-input" placeholder="页码" @keyup.enter="jump" />
+        <span class="jump-label">页</span>
+        <el-button type="primary" plain size="small" native-type="submit">跳转</el-button>
+      </form>
     </div>
 
     <el-alert
@@ -174,6 +188,11 @@ onMounted(load)
 .text-muted { color: #94a3b8; }
 .text-secondary { color: #64748b; font-size: 13px; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.9em; }
-.pager-wrap { display: flex; justify-content: center; margin-top: 20px; }
+.pager-wrap { display: flex; justify-content: center; align-items: center;
+  gap: 10px; margin-top: 20px; }
+.jump-form { display: flex; align-items: center; gap: 4px; }
+.jump-label { font-size: 13px; color: #475569; }
+.jump-input { width: 64px; }
+.jump-input :deep(.el-input__inner) { text-align: center; }
 .blocked-alert { margin-top: 12px; }
 </style>
