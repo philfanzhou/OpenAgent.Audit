@@ -1,0 +1,85 @@
+/* ── 主题：靛蓝 Indigo（Element Plus 变量覆盖）────────────────── */
+:root {
+  --el-color-primary: #4f46e5;
+  --el-color-primary-light-3: #6366f1;
+  --el-color-primary-light-5: #818cf8;
+  --el-color-primary-light-7: #a5b4fc;
+  --el-color-primary-light-8: #c7d2fe;
+  --el-color-primary-light-9: #eef2ff;
+  --el-color-primary-dark-2: #4338ca;
+  --el-color-success: #059669;
+  --el-color-danger: #dc2626;
+  --el-border-radius-base: 10px;
+  --el-font-size-base: 14px;
+}
+
+body {
+  margin: 0;
+  background: #f8fafc;
+  color: #0f172a;
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 顶栏：悬浮毛玻璃 ── */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 28px;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid #e2e8f0;
+}
+.brand { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: #4f46e5; }
+
+/* ── 页面容器 ── */
+.page { max-width: 1120px; margin: 32px auto; padding: 0 28px; }
+.page-title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px; }
+.page-sub { color: #94a3b8; font-size: 13px; margin: 0 0 24px; }
+
+/* ── 会话详情：trace 卡片与内容块 ── */
+.trace-card { margin-top: 24px; }
+.msg {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px 16px;
+  line-height: 1.9;
+  margin: 10px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.card .msg:last-child { margin-bottom: 2px; }
+
+/* ── 脱敏芯片（编号+掩码）：审计台签名交互 ── */
+.ent-chip {
+  cursor: pointer;
+  border: 1px dashed #a5b4fc;
+  background: #eef2ff;
+  color: #4f46e5;
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9em;
+  transition: background 0.15s ease;
+}
+.ent-chip:hover { background: #e0e7ff; }
+.ent-revealed {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9em;
+}
+.ent-hint { color: #94a3b8; font-size: 12px; }
+
+/* ── 观察类型标记 ── */
+.obs-tag { margin-right: 8px; }

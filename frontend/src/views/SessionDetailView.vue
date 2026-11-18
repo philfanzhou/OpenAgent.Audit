@@ -1,114 +1,153 @@
 <script setup>
-import { ref, onMounted } from "vue";
-import { useRoute } from "vue-router";
-import { api } from "../api.js";
+import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { api } from '../api'
+import { auth, setPrincipal } from '../store'
+import { parseEntSegments } from '../entmark'
 
-const route = useRoute();
-const traces = ref([]);
-const error = ref("");
-const loading = ref(true);
+const route = useRoute()
+const sessionId = route.params.id
 
-// Render entity chips: split text into plain parts and ⟦TYPE#id|mask⟧ chips.
-// Clicking a chip copies the full entity id — exactly the 对象ID the restore
-// request form asks for.
-const copiedId = ref("");
+const loading = ref(true)
+const error = ref('')
+const traces = ref([])
+const zoneLabel = ref('CST+08:00')
 
-function parts(text) {
-  if (typeof text !== "string") return [{ plain: JSON.stringify(text) }];
-  const out = [];
-  const re = /⟦([A-Z_]+)#([0-9a-f]+)\|([^⟧]*)⟧/g;
-  let last = 0;
-  let m;
-  const labels = {
-    PHONE_NUMBER: "电话", CN_PHONE: "电话", ID_CARD: "身份证",
-    BANK_CARD: "银行卡", EMAIL_ADDRESS: "邮箱", PERSON: "姓名",
-  };
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) out.push({ plain: text.slice(last, m.index) });
-    out.push({ chip: true, type: labels[m[1]] || m[1], mask: m[3], id: m[2] });
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) out.push({ plain: text.slice(last) });
-  return out;
-}
+// 脱敏芯片：管理员可查看原文；普通用户点击给提示。
+const revealed = ref({}) // entityId -> plaintext
 
-async function copyEntityId(p) {
+const revealable = computed(() => auth.isAdmin)
+
+async function load() {
+  loading.value = true
   try {
-    await navigator.clipboard.writeText(p.id);
-  } catch {
-    window.prompt("请手动复制对象 ID：", p.id);
-  }
-  copiedId.value = p.id;
-  setTimeout(() => { if (copiedId.value === p.id) copiedId.value = ""; }, 1500);
-}
-
-onMounted(async () => {
-  try {
-    traces.value = (await api.session(route.params.sessionId)).traces;
-  } catch (e) {
-    error.value = e.message;
+    const data = await api.session(sessionId)
+    traces.value = data.traces ?? []
+  } catch (err) {
+    error.value = err.message
   } finally {
-    loading.value = false;
+    loading.value = false
   }
-});
-
-function fmt(ts) {
-  return ts ? new Date(ts).toLocaleString("zh-CN") : "-";
 }
+
+async function reveal(entityId) {
+  const result = await api.reveal(entityId)
+  revealed.value = { ...revealed.value, [entityId]: result.plaintext }
+}
+
+async function onChipClick(segment) {
+  if (!auth.isAdmin) {
+    ElMessage.info('查看原文需要登录管理员（每次查看都会记录审计日志）')
+    return
+  }
+  try {
+    await reveal(segment.entityId)
+  } catch (err) {
+    ElMessage.error(err.message || '无法查看原文')
+  }
+}
+
+onMounted(load)
 </script>
 
 <template>
-  <div>
-    <router-link to="/sessions" class="text-sm text-blue-600 hover:underline">← 返回会话列表</router-link>
-    <h1 class="text-2xl font-bold text-slate-800 mt-2 mb-6">
-      会话 <span class="font-mono text-lg">{{ route.params.sessionId }}</span>
-    </h1>
+  <div class="page">
+    <h1 class="page-title">会话 <span class="mono">{{ sessionId }}</span></h1>
+    <p class="page-sub">
+      敏感值以「编号 + 掩码」入库。
+      <template v-if="revealable">
+        点击脱敏芯片可查看原文，<strong>每次查看都会记录到审计日志</strong>。
+      </template>
+      <template v-else>
+        查看原文请先「登录管理员」。
+      </template>
+    </p>
 
-    <p v-if="loading" class="text-slate-500">加载中…</p>
-    <p v-else-if="error" class="text-red-600">{{ error }}</p>
+    <el-button size="small" @click="$router.push('/sessions')">← 返回会话列表</el-button>
 
-    <div v-else class="space-y-6">
-      <div v-for="t in traces" :key="t.trace_id" class="bg-white rounded-xl shadow p-5">
-        <div class="flex items-center gap-3 mb-4 text-sm text-slate-500">
-          <span class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-xs">{{ t.name }}</span>
-          <span class="font-mono text-xs">{{ t.trace_id }}</span>
-          <span>用户 {{ t.user_id }}</span>
-          <span>{{ fmt(t.timestamp) }}</span>
-        </div>
-        <div class="space-y-3">
-          <div v-for="o in t.observations" :key="o.id" class="border border-slate-100 rounded-lg p-3">
-            <div class="flex items-center gap-2 text-xs text-slate-400 mb-1.5">
-              <span class="px-1.5 py-0.5 rounded bg-slate-100">{{ o.type === "generation" ? "LLM 调用" : "步骤" }}</span>
-              <span>{{ o.name }}</span>
-              <span v-if="o.model">{{ o.model }}</span>
-              <span v-if="o.latency_ms">{{ (o.latency_ms / 1000).toFixed(1) }}s</span>
-              <span v-if="o.usage && o.usage.input">tokens {{ o.usage.input }} → {{ o.usage.output }}</span>
-            </div>
-            <div v-if="o.input !== null && o.input !== undefined" class="text-sm leading-7 text-slate-700">
-              <span class="text-slate-400 mr-1">输入:</span>
-              <template v-for="(p, i) in parts(o.input)" :key="i">
-                <span v-if="p.plain">{{ p.plain }}</span>
-                <button v-else @click="copyEntityId(p)" title="点击复制对象 ID（用于还原申请）"
-                  class="inline-flex items-center mx-0.5 px-1.5 rounded border border-dashed hover:border-blue-400 hover:text-blue-700 border-slate-300 bg-slate-50 text-slate-500 text-xs align-middle">
-                  {{ p.type }} · {{ p.mask }}
-                  <span v-if="copiedId === p.id" class="ml-1 text-blue-600">✓已复制</span>
-                </button>
-              </template>
-            </div>
-            <div v-if="o.output !== null && o.output !== undefined" class="text-sm leading-7 text-slate-700 mt-1">
-              <span class="text-slate-400 mr-1">输出:</span>
-              <template v-for="(p, i) in parts(o.output)" :key="i">
-                <span v-if="p.plain">{{ p.plain }}</span>
-                <button v-else @click="copyEntityId(p)" title="点击复制对象 ID（用于还原申请）"
-                  class="inline-flex items-center mx-0.5 px-1.5 rounded border border-dashed hover:border-blue-400 hover:text-blue-700 border-slate-300 bg-slate-50 text-slate-500 text-xs align-middle">
-                  {{ p.type }} · {{ p.mask }}
-                  <span v-if="copiedId === p.id" class="ml-1 text-blue-600">✓已复制</span>
-                </button>
-              </template>
-            </div>
+    <el-alert v-if="error" type="error" :title="error" class="mt-3" :closable="false" />
+
+    <el-empty v-else-if="!loading && !traces.length" description="该会话没有 trace 记录" />
+
+    <el-card
+      v-for="t in traces"
+      :key="t.trace_id"
+      shadow="never"
+      class="trace-card"
+      v-loading="loading"
+    >
+      <template #header>
+        <span class="pill b3 obs-tag">trace</span>
+        <span class="mono">{{ t.trace_id }}</span>
+        <span class="text-secondary small ms-2">{{ t.timestamp }}</span>
+      </template>
+
+      <p class="meta-line">
+        用户 <span class="mono">{{ t.user_id }}</span>
+        <template v-if="t.agent_tag">
+          · Agent <el-tag size="small" effect="light" type="primary">{{ t.agent_tag }}</el-tag>
+        </template>
+        · {{ t.name }}
+      </p>
+
+      <div v-for="o in t.observations" :key="o.id || o.name" class="observation">
+        <p class="obs-head">
+          <span class="pill tool obs-tag">{{ o.type }}</span>
+          <strong>{{ o.name }}</strong>
+          <span v-if="o.latency_ms" class="text-secondary small">{{ o.latency_ms }}ms</span>
+        </p>
+
+        <template v-if="o.input">
+          <div class="msg">
+            <template v-for="(seg, idx) in parseEntSegments(o.input)" :key="idx">
+              <span v-if="seg.type === 'text'">{{ seg.text }}</span>
+              <span v-else-if="revealed[seg.entityId]" class="ent-revealed">{{ revealed[seg.entityId] }}</span>
+              <button
+                v-else
+                class="ent-chip"
+                :title="seg.entityType"
+                @click="onChipClick(seg)"
+              >
+                {{ seg.mask }}
+              </button>
+            </template>
           </div>
-        </div>
+        </template>
+
+        <template v-if="o.output">
+          <div class="msg">
+            <template v-for="(seg, idx) in parseEntSegments(o.output)" :key="'o' + idx">
+              <span v-if="seg.type === 'text'">{{ seg.text }}</span>
+              <span v-else-if="revealed[seg.entityId]" class="ent-revealed">{{ revealed[seg.entityId] }}</span>
+              <button
+                v-else
+                class="ent-chip"
+                :title="seg.entityType"
+                @click="onChipClick(seg)"
+              >
+                {{ seg.mask }}
+              </button>
+            </template>
+          </div>
+        </template>
       </div>
-    </div>
+    </el-card>
   </div>
 </template>
+
+
+<style scoped>
+.page-title .mono { font-size: 20px; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
+.meta-line { color: #475569; font-size: 13px; margin: 0 0 4px; }
+.obs-head { margin: 18px 0 8px; }
+.obs-head strong { font-size: 13.5px; }
+.obs-tag { margin-right: 8px; }
+.text-secondary { color: #94a3b8; font-size: 12.5px; }
+.ms-2 { margin-left: 8px; }
+.mt-3 { margin-top: 12px; }
+.pill.b3 { background: #eef2ff; color: #4f46e5; }
+.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.pill.tool { background: #eef2ff; color: #4f46e5; }
+</style>

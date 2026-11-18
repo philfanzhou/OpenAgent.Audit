@@ -1,48 +1,79 @@
 <script setup>
-import { useRouter } from "vue-router";
-import { auth, ROLE_LABELS } from "./store.js";
+import { onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessageBox, ElMessage } from 'element-plus'
+import { api } from './api'
+import { auth, clearPrincipal } from './store'
 
-const router = useRouter();
+const router = useRouter()
 
-function logout() {
-  auth.logout();
-  router.push("/login");
+onMounted(async () => {
+  // 预热身份信息（登录页之外的页面都需要）
+  if (!auth.loaded && router.currentRoute.value.path !== '/login') {
+    try {
+      const me = await api.me()
+      Object.assign(auth, {
+        loaded: true,
+        username: me.username,
+        role: me.role,
+        roleLabel: me.role_label,
+        isAdmin: me.is_admin,
+        canStepUpToAdmin: me.can_step_up_to_admin
+      })
+    } catch {
+      /* 未登录由路由守卫处理 */
+    }
+  }
+})
+
+async function logout() {
+  await api.logout()
+  clearPrincipal()
+  router.push('/login')
+}
+
+async function adminLogout() {
+  await api.adminLogout()
+  auth.isAdmin = false
+  auth.canStepUpToAdmin = false
+  ElMessage.success('已退出管理员')
+}
+
+function adminStepUp() {
+  ElMessageBox.prompt('请输入管理员密码', '登录管理员', {
+    inputType: 'password',
+    inputPlaceholder: '管理员密码',
+    confirmButtonText: '登录',
+    cancelButtonText: '取消'
+  })
+    .then(({ value }) => api.adminLogin(auth.username, value))
+    .then(() => {
+      auth.isAdmin = true
+      ElMessage.success('管理员已解锁，点击脱敏内容可查看原文（每次查看都会记录审计日志）')
+    })
+    .catch((err) => {
+      if (err !== 'cancel' && err) ElMessage.error(err.message || '管理员登录失败')
+    })
 }
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col">
-    <header class="bg-slate-900 text-white shadow">
-      <div class="mx-auto max-w-6xl px-6 h-14 flex items-center gap-6">
-        <router-link to="/sessions" class="flex items-center gap-2 font-semibold">
-          <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
-          OpenAgent 审计平台
-        </router-link>
-        <nav class="flex gap-1 text-sm" v-if="auth.token">
-          <router-link to="/sessions" class="px-3 py-1.5 rounded hover:bg-slate-700"
-            :class="{ 'bg-slate-700': $route.path.startsWith('/sessions') }">会话审计</router-link>
-          <router-link to="/requests" class="px-3 py-1.5 rounded hover:bg-slate-700"
-            :class="{ 'bg-slate-700': $route.path.startsWith('/requests') }">还原审批</router-link>
-          <router-link to="/audit-log" class="px-3 py-1.5 rounded hover:bg-slate-700"
-            :class="{ 'bg-slate-700': $route.path.startsWith('/audit-log') }">审计日志</router-link>
-          <router-link v-if="auth.role === 'developer'" to="/metrics"
-            class="px-3 py-1.5 rounded hover:bg-slate-700"
-            :class="{ 'bg-slate-700': $route.path.startsWith('/metrics') }">运行指标</router-link>
-        </nav>
-        <div class="ml-auto flex items-center gap-3 text-sm" v-if="auth.token">
-          <span class="text-slate-300">
-            {{ auth.username }}
-            <span class="ml-1 px-2 py-0.5 rounded-full bg-slate-700 text-xs">{{ ROLE_LABELS[auth.role] || auth.role }}</span>
-          </span>
-          <button @click="logout" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600">退出</button>
-        </div>
-      </div>
-    </header>
-    <main class="flex-1 mx-auto w-full max-w-6xl px-6 py-8">
-      <router-view />
-    </main>
-    <footer class="py-4 text-center text-xs text-slate-400">
-      展示时脱敏（模式 B）· 敏感信息以编号 + 掩码显示，还原需审批并全程留痕
-    </footer>
-  </div>
+  <header class="app-header">
+    <span class="brand">OpenAgent 审计台</span>
+    <nav class="d-flex gap-1" style="flex: 1">
+      <router-link class="nav-link" to="/sessions">会话</router-link>
+      <router-link v-if="auth.isAdmin" class="nav-link" to="/audit-log">审计日志</router-link>
+    </nav>
+    <div v-if="auth.username" class="d-flex align-items-center gap-2">
+      <span class="text-secondary small">{{ auth.username }}</span>
+      <el-tag :type="auth.isAdmin ? 'success' : 'info'" size="small" effect="light">
+        {{ auth.roleLabel }}
+      </el-tag>
+      <el-button v-if="auth.isAdmin" size="small" @click="adminLogout">退出管理员</el-button>
+      <el-button v-else-if="auth.canStepUpToAdmin" size="small" @click="adminStepUp">登录管理员</el-button>
+      <el-button size="small" text @click="logout">退出</el-button>
+    </div>
+  </header>
+
+  <router-view />
 </template>

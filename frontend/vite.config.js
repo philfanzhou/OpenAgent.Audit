@@ -1,17 +1,19 @@
-import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
-import tailwindcss from "@tailwindcss/vite";
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
 
-// Dev server proxies API calls to the local audit-api (uvicorn :8100) so the
-// SPA can use cookie/bearer auth without CORS setup.
+// 开发期把 API 请求代理到本机 audit-api（run_local.py 默认 8100）；
+// 生产构建产出纯静态文件，由 audit-api 直接托管（离线部署可用）。
 export default defineConfig({
-  plugins: [vue(), tailwindcss()],
+  plugins: [vue()],
   server: {
     port: 5173,
     proxy: {
-      "/v1": "http://127.0.0.1:8100",
-      "/internal": "http://127.0.0.1:8100",
-      "/healthz": "http://127.0.0.1:8100",
-    },
+      '/v1': 'http://127.0.0.1:8100',
+      '/ui': 'http://127.0.0.1:8100',
+      '/console': 'http://127.0.0.1:8100'
+    }
   },
-});
+  build: {
+    outDir: 'dist'
+  }
+})

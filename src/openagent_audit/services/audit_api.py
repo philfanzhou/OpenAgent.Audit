@@ -27,7 +27,8 @@ from pathlib import Path
 import secrets
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -171,6 +172,11 @@ def build_container(settings: Settings) -> AppContainer:
 # ---------------------------------------------------------------------------
 # Request bodies
 # ---------------------------------------------------------------------------
+
+
+class TestLoginBody(BaseModel):
+    username: str = ""
+    password: str = ""
 
 
 class AdminLoginBody(BaseModel):
@@ -502,6 +508,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             "username": principal.username,
             "role": principal.role,
             "is_admin": principal.is_admin,
+            "can_step_up_to_admin": principal.can_step_up_to_admin,
             "role_label": ROLE_LABELS.get(principal.role, principal.role),
         }
 
@@ -706,6 +713,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
                     "ts_display": to_display(e.ts, display_tz).isoformat(),
                     "actor": e.actor,
                     "role": e.role,
+                    "role_label": ROLE_LABELS.get(e.role, e.role),
                     "action": e.action,
                     "object_type": e.object_type,
                     "object_id": e.object_id,
@@ -770,6 +778,57 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     # -- web UI ------------------------------------------------------------
+
+    # ── Console JSON API（Element Plus 单页控制台）────────────────────
+    # 与 /ui/* 页面共用同一套会话 Cookie 与业务逻辑；SPA 只换渲染层。
+
+    @app.get("/console/api/meta")
+    def console_meta():
+        """SPA 启动信息：SSO 是否可用、入口 URL、显示时区。"""
+        return {
+            "sso_enabled": bool(container.sso and container.sso.is_enabled()),
+            "sso_start_url": "/ui/login/sso/start",
+            "sso_callback_hint": "/ui/login/sso/callback",
+            "display_zone_label": display_zone_label,
+        }
+
+    @app.post("/console/api/login/test")
+    async def console_login_test(body: TestLoginBody, request: Request):
+        """测试账号登录（JSON）：与 /ui/login 的本地账号路径共用逻辑。"""
+        principal: Principal | None = None
+        if body.username.strip():
+            principal = container.identities.resolve_test_account(
+                body.username.strip(), body.password
+            )
+        if principal is None:
+            if not settings.test_username or not settings.test_password:
+                raise HTTPException(
+                    status_code=503,
+                    detail="测试账号未启用（AUDIT_TEST_USERNAME/AUDIT_TEST_PASSWORD 为空）。请改用企业账号登录。",
+                )
+            raise HTTPException(status_code=401, detail="测试账号或密码不正确。")
+
+        session = container.sessions.create(principal)
+        container.audit.append(
+            actor=principal.username,
+            role=principal.role,
+            action="LOGIN",
+            object_type="session",
+            object_id=principal.username,
+            detail={"via": "test-account", "ephemeral": principal.ephemeral},
+        )
+        secure = _cookie_security(request)
+        response = JSONResponse({"username": principal.username, "role": principal.role})
+        response.set_cookie(_SESSION_COOKIE, session.token, **secure)
+        return response
+
+    @app.post("/console/api/logout")
+    def console_logout(request: Request):
+        """退出平台会话（JSON）。"""
+        container.sessions.drop(request.cookies.get(_SESSION_COOKIE))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(_SESSION_COOKIE)
+        return response
 
     @app.get("/ui", response_class=HTMLResponse)
     def ui_index(request: Request):
@@ -1253,6 +1312,28 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     @app.exception_handler(AuthorizationError)
     def _perm_error(request: Request, exc: AuthorizationError):
         return JSONResponse({"detail": str(exc)}, status_code=403)
+
+    # ── SPA（Element Plus 单页控制台）托管 ────────────────────────────
+    # 构建产物 frontend/dist 由部署包携带；除保留前缀外的 GET 一律回落
+    # 到 index.html，支持客户端路由的深链接。
+    spa_dist_candidates = [
+        Path(__file__).parents[3] / "frontend" / "dist",
+        Path(__file__).parents[2] / "frontend" / "dist",
+        Path("/app/frontend/dist"),
+    ]
+    spa_index = next(
+        (c / "index.html" for c in spa_dist_candidates if (c / "index.html").is_file()),
+        None,
+    )
+
+    @app.get("/{full_path:path}", response_class=FileResponse, include_in_schema=False)
+    def spa_fallback(full_path: str):
+        reserved = ("api/", "v1/", "ui/", "static/", "console/", "internal/", "healthz")
+        if full_path.startswith(reserved):
+            raise HTTPException(status_code=404, detail="Not Found")
+        if spa_index is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(spa_index)
 
     return app
 
