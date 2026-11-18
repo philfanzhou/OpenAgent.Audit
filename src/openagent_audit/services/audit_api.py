@@ -1333,6 +1333,12 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             raise HTTPException(status_code=404, detail="Not Found")
         if spa_index is None:
             raise HTTPException(status_code=404, detail="Not Found")
+        # 真实构建产物（JS/CSS/字体）按原路径返回；仅路由路径回落 index.html。
+        # 顺序不能反：把 HTML 当 JS 模块返回会被浏览器拒绝，页面一片空白。
+        base = spa_index.parent.resolve()
+        candidate = (base / full_path).resolve()
+        if candidate.is_file() and str(candidate).startswith(str(base)):
+            return FileResponse(candidate)
         return FileResponse(spa_index)
 
     return app
