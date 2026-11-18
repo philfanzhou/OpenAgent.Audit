@@ -29,6 +29,7 @@ import secrets
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from openagent_audit.bootstrap import (
@@ -354,6 +355,7 @@ def display_range_to_utc(
 
 def create_audit_app(container: AppContainer) -> FastAPI:
     app = FastAPI(title="openagent-audit audit-api", docs_url=None, redoc_url=None)
+    app.mount("/static", StaticFiles(directory=str(_TEMPLATES_DIR.parent / "static")), name="static")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     settings = container.settings
     # Entries are stored in UTC; pages render them in this zone and label it.

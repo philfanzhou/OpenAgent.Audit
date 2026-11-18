@@ -1,17 +1,18 @@
 {# Shared pager: 10 rows per page, at most 20 pages. Centered, with a page jump. #}
 {% if total_pages > 1 %}
-<nav class="pager">
+<nav class="d-flex justify-content-center align-items-center gap-2 flex-wrap mt-4" aria-label="分页">
   {% if page > 1 %}
-    <a class="btn" href="{{ pager_base }}page={{ page - 1 }}{{ pager_query }}">上一页</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ pager_base }}page={{ page - 1 }}{{ pager_query }}">上一页</a>
   {% endif %}
-  <span class="muted">第 {{ page }} / {{ total_pages }} 页</span>
+  <span class="small text-secondary">第 {{ page }} / {{ total_pages }} 页</span>
   {% if page < total_pages %}
-    <a class="btn" href="{{ pager_base }}page={{ page + 1 }}{{ pager_query }}">下一页</a>
+    <a class="btn btn-outline-primary btn-sm" href="{{ pager_base }}page={{ page + 1 }}{{ pager_query }}">下一页</a>
   {% endif %}
-  <form class="pager-jump" onsubmit="return jumpToPage(this)">
-    <label for="jump-page">跳至</label>
-    <input id="jump-page" type="number" min="1" max="{{ total_pages }}" placeholder="{{ page }}" aria-label="目标页码">
-    <button class="btn" type="submit">跳转</button>
+  <form class="d-flex align-items-center gap-1 ms-3" onsubmit="return jumpToPage(this)">
+    <label class="small text-secondary" for="jump-page">跳至</label>
+    <input id="jump-page" class="form-control form-control-sm text-center" style="width:64px"
+           type="number" min="1" max="{{ total_pages }}" placeholder="{{ page }}" aria-label="目标页码">
+    <button class="btn btn-primary btn-sm" type="submit">跳转</button>
   </form>
 </nav>
 <script>
@@ -26,7 +27,7 @@ function jumpToPage(form) {
 </script>
 {% endif %}
 {% if truncated %}
-<div class="notice">
+<div class="alert alert-primary py-2 px-3 small mt-3">
   仅有最近 {{ max_visible }} 条可直接翻页；更早的数据请使用搜索条件（时间范围或关键字）。
 </div>
 {% endif %}

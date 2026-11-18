@@ -1,44 +1,39 @@
 {% extends "base.html" %}
 {% block title %}登录 · OpenAgent 审计台{% endblock %}
 {% block content %}
-<div class="login" style="max-width:520px">
-  <div class="card">
-    <h1>进入审计台</h1>
-    <p class="sub">会话内容以脱敏形式展示。查看原文需要管理员登录。</p>
+<div class="card shadow-sm mx-auto" style="max-width:520px">
+  <div class="card-body p-4">
+    <h1 class="h4 mb-1">进入审计台</h1>
+    <p class="sub mb-3">会话内容以脱敏形式展示。查看原文需要管理员登录。</p>
 
     {% if sso_enabled %}
     {# Primary path: the company SSO. One click, no credentials typed here. #}
-    <div style="margin-bottom:22px">
-      <a class="btn primary" href="/ui/login/sso/start"
-         style="display:block;text-align:center;padding:9px 14px;text-decoration:none">
-        用企业账号登录
-      </a>
-      <p class="muted" style="margin:8px 0 0">
+    <div class="d-grid mb-3">
+      <a class="btn btn-primary btn-lg" href="/ui/login/sso/start">用企业账号登录</a>
+      <p class="small text-secondary mt-2 mb-0">
         跳转到公司统一登录，验证后自动返回审计台。
       </p>
     </div>
-    <hr style="border:none;border-top:1px solid var(--line);margin:0 0 16px">
+    <hr>
     {% endif %}
 
     {# Secondary path: the local test account, collapsed by default.
        It is a separate <form> inside its own <details>, so collapsing hides
        the form without ever stripping fields from a submission. #}
     <details id="test-login"{% if show_test_login or error %} open{% endif %}>
-      <summary style="cursor:pointer;color:var(--ink-3);font-size:13.5px">
+      <summary class="small text-secondary" style="cursor:pointer">
         用测试账号登录（{% if sso_enabled %}SSO 不可用时备用{% else %}OpenAgent 未传递身份时使用{% endif %}）
       </summary>
-      <form action="/ui/login" method="post" style="margin-top:14px">
-        <label for="username">测试账号</label>
-        <input id="username" name="username" autocomplete="username"
+      <form action="/ui/login" method="post" class="mt-3">
+        <label class="form-label mb-1 small" for="username">测试账号</label>
+        <input id="username" class="form-control" name="username" autocomplete="username"
                placeholder="test" value="{{ test_username or '' }}">
-        <label for="password">测试账号密码</label>
-        <input id="password" name="password" type="password" autocomplete="current-password">
-        <p class="muted" style="margin:6px 0 0">
+        <label class="form-label mb-1 small mt-2" for="password">测试账号密码</label>
+        <input id="password" class="form-control" name="password" type="password" autocomplete="current-password">
+        <p class="form-text small mb-2">
           仅为普通用户，<strong>不能</strong>登录管理员，1 小时后自动退出。
         </p>
-        <div style="margin-top:12px">
-          <button type="submit">用测试账号登录</button>
-        </div>
+        <button class="btn btn-primary" type="submit">用测试账号登录</button>
       </form>
     </details>
 
