@@ -67,6 +67,9 @@ function jump() {
 }
 
 function openSession(id) {
+  // 用户正在选中文本（复制用户/Agent 数据）时不触发跳转。
+  const selection = window.getSelection()
+  if (selection && selection.toString().length > 0) return
   window.location.href = `/sessions/${id}`
 }
 
@@ -183,7 +186,7 @@ onMounted(load)
 <style scoped>
 .filter-card { margin-bottom: 16px; }
 .filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-.sessions-table { cursor: pointer; --el-table-row-hover-bg-color: #f8fafc; }
+.sessions-table { --el-table-row-hover-bg-color: #f8fafc; }
 .agent-tag { margin-right: 4px; }
 .text-muted { color: #94a3b8; }
 .text-secondary { color: #64748b; font-size: 13px; }
