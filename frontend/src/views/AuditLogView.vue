@@ -62,10 +62,6 @@ function jumpPage(n) {
   load()
 }
 
-function roleTagType(role) {
-  return { admin: 'success', user: 'info', service: 'warning' }[role] || 'info'
-}
-
 onMounted(() => {
   if (!auth.isAdmin) return
   load()
@@ -138,7 +134,7 @@ onMounted(() => {
       </el-table-column>
       <el-table-column label="角色" width="110">
         <template #default="{ row }">
-          <el-tag size="small" :type="roleTagType(row.role)">{{ row.role_label }}</el-tag>
+          <span>{{ row.role_label }}</span>
         </template>
       </el-table-column>
       <el-table-column label="动作" min-width="160">

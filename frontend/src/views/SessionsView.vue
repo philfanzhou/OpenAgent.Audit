@@ -128,8 +128,7 @@ onMounted(load)
             v-for="t in row.agent_tags || []"
             :key="t"
             size="small"
-            type="primary"
-            effect="light"
+            effect="plain"
             class="agent-tag"
           >
             {{ t }}

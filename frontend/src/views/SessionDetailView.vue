@@ -86,15 +86,15 @@ onMounted(load)
       <p class="meta-line">
         用户 <span class="mono">{{ t.user_id }}</span>
         <template v-if="t.agent_tag">
-          · Agent <el-tag size="small" effect="light" type="primary">{{ t.agent_tag }}</el-tag>
+          · Agent <span class="mono">{{ t.agent_tag }}</span>
         </template>
         · {{ t.name }}
       </p>
 
       <div v-for="o in t.observations" :key="o.id || o.name" class="observation">
         <p class="obs-head">
-          <span class="pill tool obs-tag">{{ o.type }}</span>
-          <strong>{{ o.name }}</strong>
+          <span class="obs-kind-label">{{ o.type }}</span>
+          <span class="obs-name">{{ o.name }}</span>
           <span v-if="o.latency_ms" class="text-secondary small">{{ o.latency_ms }}ms</span>
         </p>
 
@@ -147,7 +147,4 @@ onMounted(load)
 .text-secondary { color: #94a3b8; font-size: 12.5px; }
 .ms-2 { margin-left: 8px; }
 .mt-3 { margin-top: 12px; }
-.pill.b3 { background: #eef2ff; color: #4f46e5; }
-.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
-.pill.tool { background: #eef2ff; color: #4f46e5; }
 </style>

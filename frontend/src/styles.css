@@ -1,28 +1,42 @@
-/* ── 主题：靛蓝 Indigo（Element Plus 变量覆盖）────────────────── */
+/* ── 设计系统：极简三色（靛蓝主色 + 中性灰阶 + 小面积状态色）────────
+   规则：
+   - 颜色只给交互（按钮/链接/激活）与状态（成功/失败的小标记）
+   - 其余一律中性：白表面、浅灰底、细边框、灰阶文字
+   ─────────────────────────────────────────────────────────────── */
 :root {
+  /* Element Plus 主题变量收敛 */
   --el-color-primary: #4f46e5;
-  --el-color-primary-light-3: #6366f1;
-  --el-color-primary-light-5: #818cf8;
-  --el-color-primary-light-7: #a5b4fc;
-  --el-color-primary-light-8: #c7d2fe;
-  --el-color-primary-light-9: #eef2ff;
+  --el-color-primary-light-3: #7c74ed;
+  --el-color-primary-light-5: #a5a8f2;
+  --el-color-primary-light-7: #c8caf7;
+  --el-color-primary-light-8: #dcdcf9;
+  --el-color-primary-light-9: #eef0fd;
   --el-color-primary-dark-2: #4338ca;
   --el-color-success: #059669;
   --el-color-danger: #dc2626;
-  --el-border-radius-base: 10px;
-  --el-font-size-base: 14px;
+  --el-color-error: #dc2626;
+  --el-color-info: #64748b;
+  --el-border-radius-base: 8px;
+  --el-text-color-primary: #1e293b;
+  --el-text-color-regular: #475569;
+  --el-text-color-secondary: #64748b;
+  --el-text-color-placeholder: #94a3b8;
+  --el-border-color: #e5e7eb;
+  --el-border-color-light: #e5e7eb;
+  --el-fill-color-light: #f8fafc;
+  --el-fill-color-lighter: #fafafa;
 }
 
 body {
   margin: 0;
-  background: #f8fafc;
-  color: #0f172a;
+  background: #fafafa;
+  color: #1e293b;
   font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── 顶栏：悬浮毛玻璃 ── */
+/* ── 顶栏：白底细线，极简 ── */
 .app-header {
   position: sticky;
   top: 0;
@@ -30,38 +44,47 @@ body {
   display: flex;
   align-items: center;
   gap: 24px;
-  padding: 10px 28px;
-  background: rgba(255, 255, 255, 0.86);
-  backdrop-filter: saturate(1.4) blur(10px);
-  -webkit-backdrop-filter: saturate(1.4) blur(10px);
-  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 28px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
 }
-.brand { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; color: #4f46e5; }
+.brand { font-weight: 650; font-size: 15px; color: #1e293b; }
 
 /* ── 页面容器 ── */
 .page { max-width: 1120px; margin: 32px auto; padding: 0 28px; }
-.page-title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 6px; }
-.page-sub { color: #94a3b8; font-size: 13px; margin: 0 0 24px; }
+.page-title { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 6px; }
+.page-sub { color: #64748b; font-size: 13px; margin: 0 0 24px; }
 
-/* ── 会话详情：trace 卡片与内容块 ── */
-.trace-card { margin-top: 24px; }
+/* ── 按钮：Element Plus 默认（白底灰边）+ 主色实心，悬停聚焦用主色 ── */
+.el-button { --el-button-hover-text-color: #4f46e5; --el-button-hover-border-color: #c7d2fe; }
+.el-button--primary { --el-button-hover-text-color: #4338ca; }
+.el-button.is-text { color: #64748b; }
+
+/* ── 表格：干净行分隔 ── */
+.el-table { --el-table-header-bg-color: #fafafa; --el-table-header-text-color: #64748b; }
+.el-table th.el-table__cell { font-size: 12px; font-weight: 600; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.9em; }
+
+/* ── 会话详情：查询/回复内容块 + trace 卡片 ── */
+.trace-card { margin-top: 20px; }
+.trace-card .el-card__header { padding: 14px 20px; border-bottom-color: #f1f5f9; }
+.trace-card .el-card__body { padding: 8px 20px 16px; }
+.meta-line { color: #64748b; font-size: 13px; margin: 0 0 6px; }
+.obs-head { margin: 16px 0 8px; display: flex; align-items: center; gap: 8px; }
+.obs-kind { font-size: 11.5px; font-weight: 600; color: #94a3b8;
+  text-transform: uppercase; letter-spacing: 0.04em; }
+.obs-name { font-size: 13.5px; font-weight: 600; color: #1e293b; }
 .msg {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 12px 16px;
-  line-height: 1.9;
-  margin: 10px 0;
-  white-space: pre-wrap;
-  word-break: break-all;
+  background: #f8fafc; border: 1px solid #eef2f6; border-radius: 8px;
+  padding: 12px 16px; line-height: 1.9; margin: 0 0 10px;
+  white-space: pre-wrap; word-break: break-all; color: #334155;
 }
-.card .msg:last-child { margin-bottom: 2px; }
 
-/* ── 脱敏芯片（编号+掩码）：审计台签名交互 ── */
+/* ── 脱敏芯片（编号+掩码）：唯一使用主色底纹的非按钮元素 ── */
 .ent-chip {
   cursor: pointer;
-  border: 1px dashed #a5b4fc;
-  background: #eef2ff;
+  border: 1px dashed #c7d2fe;
+  background: #f5f6ff;
   color: #4f46e5;
   border-radius: 6px;
   padding: 1px 8px;
@@ -69,11 +92,11 @@ body {
   font-size: 0.9em;
   transition: background 0.15s ease;
 }
-.ent-chip:hover { background: #e0e7ff; }
+.ent-chip:hover { background: #eef2ff; }
 .ent-revealed {
-  background: #fef2f2;
-  color: #dc2626;
-  border: 1px solid #fecaca;
+  background: #f0fdf4;
+  color: #047857;
+  border: 1px solid #bbf7d0;
   border-radius: 6px;
   padding: 1px 8px;
   font-family: ui-monospace, Consolas, monospace;
@@ -81,5 +104,29 @@ body {
 }
 .ent-hint { color: #94a3b8; font-size: 12px; }
 
-/* ── 观察类型标记 ── */
-.obs-tag { margin-right: 8px; }
+/* ── 观察类型：纯文字小标签（不上色）── */
+.obs-kind-label { font-size: 11.5px; font-weight: 600; color: #94a3b8; }
+
+/* ── 登录页 ── */
+.login-page { max-width: 520px; margin: 12vh auto; padding: 0 16px; }
+.login-title { font-size: 20px; font-weight: 650; margin: 0 0 4px; }
+.login-sub { color: #64748b; font-size: 13px; margin: 0 0 20px; }
+.sso-btn { width: 100%; height: 44px; font-size: 15px; }
+.sso-hint { color: #94a3b8; font-size: 12.5px; margin: 8px 0 0; text-align: center; }
+.test-title { font-size: 13.5px; color: #475569; }
+.test-note { display: block; }
+.w-100 { width: 100%; }
+.mt-2 { margin-top: 8px; }
+
+/* ── 其他 ── */
+.error { color: #dc2626; font-size: 13.5px; margin-top: 8px; }
+.text-muted { color: #94a3b8; }
+.text-secondary { color: #64748b; font-size: 13px; }
+.mt-3 { margin-top: 12px; }
+.pager-wrap { display: flex; justify-content: center; margin-top: 20px; }
+.blocked-alert { margin-top: 12px; }
+.filter-card { margin-bottom: 16px; }
+.filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.chain-alert { margin-bottom: 16px; }
+.agent-tag { margin-right: 4px; }
+.small { font-size: 12.5px; }

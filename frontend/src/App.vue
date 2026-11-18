@@ -66,9 +66,7 @@ function adminStepUp() {
     </nav>
     <div v-if="auth.username" class="d-flex align-items-center gap-2">
       <span class="text-secondary small">{{ auth.username }}</span>
-      <el-tag :type="auth.isAdmin ? 'success' : 'info'" size="small" effect="light">
-        {{ auth.roleLabel }}
-      </el-tag>
+      <span class="small text-secondary">{{ auth.roleLabel }}</span>
       <el-button v-if="auth.isAdmin" size="small" @click="adminLogout">退出管理员</el-button>
       <el-button v-else-if="auth.canStepUpToAdmin" size="small" @click="adminStepUp">登录管理员</el-button>
       <el-button size="small" text @click="logout">退出</el-button>
