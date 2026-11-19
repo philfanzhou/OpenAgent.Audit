@@ -1,8 +1,10 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
 
+const router = useRouter()
 const loading = ref(true)
 const sessions = ref([])
 const total = ref(0)
@@ -70,7 +72,8 @@ function openSession(id) {
   // 用户正在选中文本（复制用户/Agent 数据）时不触发跳转。
   const selection = window.getSelection()
   if (selection && selection.toString().length > 0) return
-  window.location.href = `/sessions/${id}`
+  // SPA 内部路由：不整页刷新，切换毫秒级完成。
+  router.push(`/sessions/${id}`)
 }
 
 onMounted(load)

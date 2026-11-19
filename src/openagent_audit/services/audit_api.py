@@ -650,7 +650,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             for key in ("last_ts", "first_ts"):
                 value = r.get(key)
                 if isinstance(value, datetime):
-                    r[key] = to_display(value, display_tz).isoformat(timespec="seconds")
+                    r[key] = to_display(value, display_tz).strftime("%Y-%m-%d %H:%M:%S")
         return {
             "sessions": page_rows,
             **paging_meta(total, page, size),
@@ -676,7 +676,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         for t in traces:
             d = _trace_dict(t)
             if t.timestamp is not None:
-                d["timestamp"] = to_display(t.timestamp, display_tz).isoformat(timespec="seconds")
+                d["timestamp"] = to_display(t.timestamp, display_tz).strftime("%Y-%m-%d %H:%M:%S")
             trace_dicts.append(d)
         return {"session_id": session_id, "traces": trace_dicts}
 
@@ -697,7 +697,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         for t in traces:
             s = _trace_summary(t)
             if t.timestamp is not None:
-                s["timestamp"] = to_display(t.timestamp, display_tz).isoformat(timespec="seconds")
+                s["timestamp"] = to_display(t.timestamp, display_tz).strftime("%Y-%m-%d %H:%M:%S")
             summaries.append(s)
         return {"traces": summaries}
 
