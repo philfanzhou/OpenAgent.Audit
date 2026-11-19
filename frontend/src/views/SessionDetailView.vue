@@ -52,7 +52,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
+  <div class="page" v-loading="loading">
     <h1 class="page-title">会话 <span class="mono">{{ sessionId }}</span></h1>
     <p class="page-sub">
       敏感值以「编号 + 掩码」入库。
@@ -64,7 +64,7 @@ onMounted(load)
       </template>
     </p>
 
-    <el-button size="small" @click="$router.push('/sessions')">← 返回会话列表</el-button>
+    <el-button size="small" @click="$router.back()">← 返回会话列表</el-button>
 
     <el-alert v-if="error" type="error" :title="error" class="mt-3" :closable="false" />
 
@@ -75,7 +75,6 @@ onMounted(load)
       :key="t.trace_id"
       shadow="never"
       class="trace-card"
-      v-loading="loading"
     >
       <template #header>
         <span class="pill b3 obs-tag">trace</span>
@@ -86,7 +85,7 @@ onMounted(load)
       <p class="meta-line">
         用户 <span class="mono">{{ t.user_id }}</span>
         <template v-if="t.agent_tag">
-          · Agent <span class="mono">{{ t.agent_tag }}</span>
+          · Agent <el-tag size="small" effect="plain" type="primary">{{ t.agent_tag }}</el-tag>
         </template>
         · {{ t.name }}
       </p>
@@ -98,9 +97,11 @@ onMounted(load)
           <span v-if="o.latency_ms" class="text-secondary small">{{ o.latency_ms }}ms</span>
         </p>
 
-        <template v-if="o.input">
-          <div class="msg">
-            <template v-for="(seg, idx) in parseEntSegments(o.input)" :key="idx">
+        <!-- 用户输入：蓝色系 -->
+        <div v-if="o.input" class="msg msg-user">
+          <div class="msg-label label-user">用户</div>
+          <div class="msg-body">
+            <template v-for="(seg, idx) in parseEntSegments(o.input)" :key="'i' + idx">
               <span v-if="seg.type === 'text'">{{ seg.text }}</span>
               <span v-else-if="revealed[seg.entityId]" class="ent-revealed">{{ revealed[seg.entityId] }}</span>
               <button
@@ -113,10 +114,12 @@ onMounted(load)
               </button>
             </template>
           </div>
-        </template>
+        </div>
 
-        <template v-if="o.output">
-          <div class="msg">
+        <!-- 模型回复：紫色系 -->
+        <div v-if="o.output" class="msg msg-agent">
+          <div class="msg-label label-agent">模型</div>
+          <div class="msg-body">
             <template v-for="(seg, idx) in parseEntSegments(o.output)" :key="'o' + idx">
               <span v-if="seg.type === 'text'">{{ seg.text }}</span>
               <span v-else-if="revealed[seg.entityId]" class="ent-revealed">{{ revealed[seg.entityId] }}</span>
@@ -130,21 +133,44 @@ onMounted(load)
               </button>
             </template>
           </div>
-        </template>
+        </div>
       </div>
     </el-card>
   </div>
 </template>
 
-
 <style scoped>
 .page-title .mono { font-size: 20px; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
-.meta-line { color: #475569; font-size: 13px; margin: 0 0 4px; }
-.obs-head { margin: 18px 0 8px; }
-.obs-head strong { font-size: 13.5px; }
+.meta-line { color: #475569; font-size: 13px; margin: 0 0 6px; }
+.obs-head { margin: 16px 0 8px; display: flex; align-items: center; gap: 8px; }
+.obs-kind-label { font-size: 11.5px; font-weight: 600; color: #94a3b8;
+  text-transform: uppercase; letter-spacing: 0.04em; }
+.obs-name { font-size: 13.5px; font-weight: 600; color: #1e293b; }
 .obs-tag { margin-right: 8px; }
 .text-secondary { color: #94a3b8; font-size: 12.5px; }
 .ms-2 { margin-left: 8px; }
 .mt-3 { margin-top: 12px; }
+.pill.b3 { background: #eef2ff; color: #4f46e5; }
+.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.pill.tool { background: #eef2ff; color: #4f46e5; }
+
+/* ── 用户/模型卡片区分：左侧色条 + 标签 ── */
+.observation { margin-bottom: 4px; }
+.msg { position: relative; padding-left: 18px; }
+.msg::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+.msg-user { --chip-tint: #eff6ff; }
+.msg-user::before { background: #3b82f6; }
+.msg-agent { --chip-tint: #f5f3ff; }
+.msg-agent::before { background: #8b5cf6; }
+.msg-user .msg-body { background: var(--chip-tint, #eff6ff); }
+.msg-agent .msg-body { background: var(--chip-tint, #f5f3ff); }
+.msg-label {
+  position: absolute; top: 6px; right: 10px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+}
+.label-user { color: #2563eb; }
+.label-agent { color: #7c3aed; }
+.msg-user { padding-left: 18px; }
+.msg-body { font-family: inherit; }
 </style>

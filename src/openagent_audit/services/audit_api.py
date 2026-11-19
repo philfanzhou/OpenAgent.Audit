@@ -645,8 +645,14 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             agent=agent,
             include_demo=include_demo,
         )
+        page_rows = rows[(page - 1) * size : (page - 1) * size + size]
+        for r in page_rows:
+            for key in ("last_ts", "first_ts"):
+                value = r.get(key)
+                if isinstance(value, datetime):
+                    r[key] = to_display(value, display_tz).isoformat(timespec="seconds")
         return {
-            "sessions": rows[(page - 1) * size : (page - 1) * size + size],
+            "sessions": page_rows,
             **paging_meta(total, page, size),
             "browse_blocked": browse_blocked,
             "browse_threshold": MAX_VISIBLE,
@@ -666,7 +672,13 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         if not traces:
             raise HTTPException(status_code=404, detail="会话不存在")
         log_view(principal, "SESSION_VIEWED", "session", session_id)
-        return {"session_id": session_id, "traces": [_trace_dict(t) for t in traces]}
+        trace_dicts = []
+        for t in traces:
+            d = _trace_dict(t)
+            if t.timestamp is not None:
+                d["timestamp"] = to_display(t.timestamp, display_tz).isoformat(timespec="seconds")
+            trace_dicts.append(d)
+        return {"session_id": session_id, "traces": trace_dicts}
 
     @app.get("/v1/traces")
     def list_traces(
@@ -681,7 +693,13 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         traces = container.trace_store.list_traces(
             session_id=session_id, user_id=user_id, from_ts=start, to_ts=end
         )
-        return {"traces": [_trace_summary(t) for t in traces]}
+        summaries = []
+        for t in traces:
+            s = _trace_summary(t)
+            if t.timestamp is not None:
+                s["timestamp"] = to_display(t.timestamp, display_tz).isoformat(timespec="seconds")
+            summaries.append(s)
+        return {"traces": summaries}
 
     @app.get("/v1/audit-log")
     def audit_log(
