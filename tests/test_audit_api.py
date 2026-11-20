@@ -153,12 +153,16 @@ def test_admin_login_rejects_wrong_password(api_client, container):
     assert "ADMIN_LOGIN_FAILED" in actions
 
 
-def test_admin_login_rejects_wrong_username(api_client):
+def test_admin_login_ignores_client_username(api_client):
+    """管理账号由服务端 AUDIT_ADMIN_USERNAME 固定；客户端（SPA step-up）只提交密码。
+
+    此前前端误传企业账号用户名（如 sinzoli），即使密码正确也永远失败。
+    """
     _login(api_client)
     resp = api_client.post(
-        "/v1/admin/login", json={"username": "root", "password": "admin@123456"}
+        "/v1/admin/login", json={"username": "whatever-wrong", "password": "admin@123456"}
     )
-    assert resp.status_code == 401
+    assert resp.status_code == 200
 
 
 def test_admin_login_succeeds_and_is_recorded(api_client, container):

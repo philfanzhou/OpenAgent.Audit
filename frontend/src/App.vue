@@ -40,7 +40,7 @@ async function adminLogout() {
 }
 
 function adminStepUp() {
-  ElMessageBox.prompt('请输入管理员密码', '登录管理员', {
+  ElMessageBox.prompt('账号：admin\n请输入管理员密码', '登录管理员', {
     inputType: 'password',
     inputPlaceholder: '管理员密码',
     confirmButtonText: '登录',

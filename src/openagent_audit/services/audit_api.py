@@ -554,7 +554,9 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             )
             raise HTTPException(status_code=429, detail=_cooldown_message(waiting))
 
-        if not _admin_credentials_match(settings, body.username, body.password):
+        # 管理账号由服务端配置（AUDIT_ADMIN_USERNAME）固定，客户端只需提供密码；
+        # 此前前端误传企业账号用户名，导致密码正确也永远校验失败。
+        if not _admin_credentials_match(settings, settings.admin_username, body.password):
             container.audit.append(
                 actor=session.principal.username,
                 role=session.principal.role,
