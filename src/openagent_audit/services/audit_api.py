@@ -322,14 +322,6 @@ def search_sessions(
     return sessions, total, demo_hidden, browse_blocked
 
 
-def _pager_query(**params) -> str:
-    """Serialise the active filters for pager links (page is appended later)."""
-    from urllib.parse import urlencode
-
-    clean = {k: v for k, v in params.items() if v}
-    return ("&" + urlencode(clean)) if clean else ""
-
-
 def _cooldown_message(seconds: int) -> str:
     """Human-readable wait time for the administrator login form."""
     minutes, secs = divmod(max(seconds, 0), 60)
@@ -931,22 +923,10 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     @app.get("/ui")
     def ui_redirect_root():
         return RedirectResponse("/sessions", status_code=302)
-    def ui_index(request: Request):
-        return RedirectResponse("/ui/sessions", status_code=302)
 
     @app.get("/ui/login", response_class=HTMLResponse)
     def ui_login_redirect():
         return RedirectResponse("/login", status_code=302)
-    async def ui_login(request: Request):
-        """Login page: enterprise SSO as the primary path, test account as the fallback."""
-        return render(
-            request,
-            "login.html",
-            error=None,
-            test_username=settings.test_username,
-            show_test_login=False,
-            sso_enabled=bool(container.sso and container.sso.is_enabled()),
-        )
 
     # Generated once per process. The start route signs the state and the
     # callback verifies it, so a per-call value would make every login fail.
@@ -1163,15 +1143,6 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         response.delete_cookie(_IDENTITY_COOKIE, secure=_is_https(request))
         return response
 
-    def ui_session(request: Request) -> tuple[Principal, str | None]:
-        """Like ``require``, but redirects a browser to the login page."""
-        try:
-            return require(request, VIEW_MASKED), request.cookies.get(_SESSION_COOKIE)
-        except AuthenticationError:
-            raise HTTPException(status_code=302, headers={"Location": "/ui/login"}) from None
-        except AuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from None
-
     @app.post("/ui/admin/login")
     def ui_admin_login(
         request: Request, username: str = Form(...), password: str = Form(...)
@@ -1270,26 +1241,6 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     @app.get("/ui/admin/login", response_class=HTMLResponse)
     def ui_admin_login_redirect():
         return RedirectResponse("/sessions", status_code=302)
-    def ui_admin_login_page(request: Request):
-        session = container.sessions.get(request.cookies.get(_SESSION_COOKIE))
-        if session is None:
-            return RedirectResponse("/ui/login", status_code=302)
-        if not session.principal.can_step_up_to_admin:
-            # The test account has no administrator entry point; do not render
-            # a form it could never successfully submit.
-            return render(
-                request,
-                "admin_login.html",
-                error="测试账号不能登录管理员。请使用 OpenAgent 正常登录的用户。",
-                session_user=session.principal.username,
-                status_code=403,
-            )
-        return render(
-            request,
-            "admin_login.html",
-            error=None,
-            session_user=session.principal.username,
-        )
 
     @app.post("/ui/admin/logout")
     def ui_admin_logout(request: Request):
@@ -1309,108 +1260,14 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     @app.get("/ui/sessions", response_class=HTMLResponse)
     def ui_sessions_redirect():
         return RedirectResponse("/sessions", status_code=302)
-    def ui_sessions(
-        request: Request,
-        q: str | None = None,
-        from_ts: str | None = None,
-        to_ts: str | None = None,
-        agent: str | None = None,
-        page: int = 1,
-    ):
-        principal, _ = ui_session(request)
-        page, size = page_args(page)
-        rows, total, demo_hidden, browse_blocked = search_sessions(
-            container, q=q, from_ts=from_ts, to_ts=to_ts, agent=agent
-        )
-        paged = rows[(page - 1) * size : (page - 1) * size + size]
-        meta = paging_meta(total, page, size)
-        return render(
-            request,
-            "sessions.html",
-            principal=principal,
-            sessions=paged,
-            **meta,
-            browse_blocked=browse_blocked,
-            demo_hidden=demo_hidden,
-            q=q or "",
-            from_ts=from_ts or "",
-            to_ts=to_ts or "",
-            agent=agent or "",
-            pager_base="/ui/sessions?",
-            pager_query=_pager_query(q=q, from_ts=from_ts, to_ts=to_ts, agent=agent),
-        )
 
     @app.get("/ui/sessions/{session_id}", response_class=HTMLResponse)
     def ui_session_detail_redirect(session_id: str):
         return RedirectResponse(f"/sessions/{session_id}", status_code=302)
-    def ui_session_detail(
-        session_id: str, request: Request, from_ts: str | None = None, to_ts: str | None = None
-    ):
-        principal, _ = ui_session(request)
-        start, end = time_range(from_ts, to_ts)
-        traces = container.trace_store.list_traces(
-            session_id=session_id, from_ts=start, to_ts=end, with_observations=True
-        )
-        if not traces:
-            raise HTTPException(status_code=404, detail="会话不存在")
-        log_view(principal, "SESSION_VIEWED", "session", session_id)
-        return render(
-            request,
-            "session_detail.html",
-            principal=principal,
-            session_id=session_id,
-            traces=[_trace_dict(t) for t in traces],
-            revealable=principal.is_admin,
-        )
 
     @app.get("/ui/audit-log", response_class=HTMLResponse)
     def ui_audit_log_redirect():
         return RedirectResponse("/audit-log", status_code=302)
-    def ui_audit_log(
-        request: Request,
-        q: str | None = None,
-        from_ts: str | None = None,
-        to_ts: str | None = None,
-        role: str | None = None,
-        action: str | None = None,
-        page: int = 1,
-        verify: bool = False,
-    ):
-        principal, _ = ui_session(request)
-        check(principal, VIEW_AUDIT_LOG)
-        page, size = page_args(page)
-        start_utc, end_utc = display_range_to_utc(from_ts, to_ts, display_tz)
-
-        entries = container.db.list_audit(
-            limit=size,
-            q=q,
-            offset=(page - 1) * size,
-            from_ts=start_utc,
-            to_ts=end_utc,
-            role=role,
-            action=action,
-        )
-        total = container.db.count_audit_entries(
-            q=q, from_ts=start_utc, to_ts=end_utc, role=role, action=action
-        )
-        meta = paging_meta(total, page, size)
-        return render(
-            request,
-            "audit_log.html",
-            principal=principal,
-            entries=entries,
-            verification=container.audit.verify() if verify or page == 1 else None,
-            role=role or "",
-            action=action or "",
-            q=q or "",
-            from_ts=from_ts or "",
-            to_ts=to_ts or "",
-            pager_base="/ui/audit-log?",
-            pager_query=_pager_query(
-                q=q, from_ts=from_ts, to_ts=to_ts, role=role, action=action
-            ),
-            **meta,
-        )
 
         # -- error mapping -----------------------------------------------------
 
