@@ -238,6 +238,13 @@ class Session:
             return False
         return (now if now is not None else time.time()) < self.admin_until
 
+    def admin_seconds_remaining(self) -> int | None:
+        """Seconds left on the administrator unlock, rounded up; ``None``
+        when the session is not unlocked."""
+        if not self.is_admin_unlocked():
+            return None
+        return max(int((self.admin_until - time.time()) // 1) + 1, 1)
+
 
 class SessionStore:
     """In-memory session table.
@@ -251,7 +258,7 @@ class SessionStore:
     def __init__(
         self,
         *,
-        admin_unlock_seconds: int = 300,
+        admin_unlock_seconds: int = 30 * 60,
         admin_cooldown_seconds: int = 600,
         idle_seconds: int = 8 * 3600,
         test_session_seconds: int = 3600,
@@ -288,7 +295,7 @@ class SessionStore:
     def get(self, token: str | None) -> Session | None:
         """Return the session, expiring its administrator unlock when due.
 
-        The unlock is checked on every access, so a 5-minute window closes even
+        The unlock is checked on every access, so the window closes even
         if the browser never sends another request. When it closes the end time
         is remembered so the cooldown can start counting.
         """

@@ -10,6 +10,7 @@ const router = createRouter({
     { path: '/sessions', name: 'sessions', component: () => import('./views/SessionsView.vue') },
     { path: '/sessions/:id', name: 'session-detail', component: () => import('./views/SessionDetailView.vue') },
     { path: '/audit-log', name: 'audit-log', component: () => import('./views/AuditLogView.vue') },
+    { path: '/metrics', name: 'metrics', component: () => import('./views/MetricsView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/sessions' }
   ]
 })
@@ -25,7 +26,7 @@ router.beforeEach(async (to) => {
     }
   }
   if (auth.isAdmin) return true
-  if (to.path === '/audit-log') return { path: '/sessions' }
+  if (to.path === '/audit-log' || to.path === '/metrics') return { path: '/sessions' }
   return true
 })
 

@@ -116,6 +116,7 @@ def build_trace_store(settings: Settings):
             tls=httpx_tls_kwargs(settings),
             cache_ttl=settings.session_cache_seconds,
             max_stale=settings.session_cache_max_stale_seconds,
+            full_rebuild_seconds=settings.session_index_full_rebuild_seconds,
         )
     from openagent_audit.tracing.trace_store import LocalTraceStore
 

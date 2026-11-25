@@ -1,16 +1,19 @@
-"""Administrator session policy: 5-minute unlock, 10-minute cooldown.
+"""Administrator session policy: 30-minute unlock, 10-minute cooldown.
 
-The console can decrypt conversations, so the privileged window is short and
-re-arming it is deliberately inconvenient:
+The console can decrypt conversations, so the privileged window is bounded
+and re-arming it is deliberately inconvenient:
 
-* an unlock lasts 5 minutes and then the session falls back to an ordinary
-  user automatically — even if the browser never sends another request;
+* an unlock lasts 30 minutes and then the session falls back to an ordinary
+  user automatically — even if the browser never sends another request. The
+  console mirrors the deadline: it shows a countdown, announces the expiry in
+  a dialog and asks for a page refresh;
 * once it ends (timeout *or* explicit logout) the same account cannot unlock
   again for 10 minutes.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import time
 
 import pytest
@@ -25,15 +28,16 @@ from openagent_audit.services.auth import (
 
 
 class TestUnlockWindow:
-    def test_default_window_is_five_minutes(self):
-        assert Settings().admin_session_minutes == 5
+    def test_default_window_is_thirty_minutes(self):
+        assert Settings().admin_session_minutes == 30
+        assert Settings.from_env({}).admin_session_minutes == 30
 
     def test_default_cooldown_is_ten_minutes(self):
         assert Settings().admin_cooldown_minutes == 10
 
     def test_session_store_defaults_match_the_policy(self):
         store = SessionStore()
-        assert store.admin_unlock_seconds == 300
+        assert store.admin_unlock_seconds == 30 * 60
         assert store.admin_cooldown_seconds == 600
 
     def test_unlock_expires_and_downgrades(self):
@@ -105,6 +109,57 @@ class TestCooldown:
 
         assert store.admin_cooldown_remaining("alice") == 0
         assert store.grant_admin(session.token) is not None
+
+
+class TestUnlockDeadlineOverHttp:
+    """The console mirrors the server-side deadline from two fields, so the
+    browser closes the administrator window at the same instant the server
+    does and can tell the user why."""
+
+    @pytest.fixture()
+    def client(self, api_client):
+        api_client.post("/ui/login", data={"token": "tok-alice"}, follow_redirects=False)
+        return api_client
+
+    def test_login_reports_how_long_the_unlock_lasts(self, client):
+        body = client.post(
+            "/v1/admin/login", json={"username": "admin", "password": "admin@123456"}
+        ).json()
+
+        assert body["is_admin"] is True
+        assert body["expires_in"] == 30 * 60
+        assert body["admin_session_minutes"] == 30
+
+    def test_me_reports_the_remaining_seconds_while_unlocked(self, client):
+        client.post("/v1/admin/login", json={"username": "admin", "password": "admin@123456"})
+
+        me = client.get("/v1/me").json()
+
+        assert me["is_admin"] is True
+        assert 30 * 60 - 5 <= me["admin_expires_in"] <= 30 * 60
+        assert me["admin_session_minutes"] == 30
+
+    def test_me_closes_the_window_when_the_deadline_passes(self, client, container):
+        client.post("/v1/admin/login", json={"username": "admin", "password": "admin@123456"})
+        # Let the deadline pass (the console's timer would fire about now).
+        with container.sessions._lock:
+            for token, session in container.sessions._sessions.items():
+                container.sessions._sessions[token] = dataclasses.replace(
+                    session, admin_until=time.time() - 1
+                )
+
+        me = client.get("/v1/me").json()
+
+        assert me["is_admin"] is False, "the unlock is forced closed at the deadline"
+        assert me["admin_expires_in"] is None
+        assert client.get("/v1/audit-log").status_code == 403
+
+    def test_me_has_no_deadline_for_an_ordinary_user(self, client):
+        me = client.get("/v1/me").json()
+
+        assert me["is_admin"] is False
+        assert me["admin_expires_in"] is None
+
 
 
 class TestCooldownOverHttp:

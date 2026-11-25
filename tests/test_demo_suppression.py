@@ -5,8 +5,8 @@ from __future__ import annotations
 import dataclasses
 from datetime import datetime, timedelta, timezone
 
-from fastapi.testclient import TestClient
 import httpx
+from fastapi.testclient import TestClient
 
 from openagent_audit.config import Settings, UserEntry
 from openagent_audit.services.audit_api import build_container

@@ -122,7 +122,7 @@ hash is configured.
 
 | Setting | Default | Effect |
 |---|---|---|
-| `AUDIT_ADMIN_SESSION_MINUTES` | `5` | The unlock expires five minutes after login; the session drops back to `user` automatically, even if the browser sends no further requests |
+| `AUDIT_ADMIN_SESSION_MINUTES` | `30` | The unlock expires thirty minutes after login; the session drops back to `user` automatically, even if the browser sends no further requests. The console shows a countdown, then announces that the window has closed and asks for a page refresh |
 | `AUDIT_ADMIN_COOLDOWN_MINUTES` | `10` | After the unlock ends (by timeout **or** by 退出管理员) the same account cannot unlock again for ten minutes. A blocked attempt is logged as `ADMIN_LOGIN_BLOCKED` |
 
 **Search and paging**: the session list and the audit log both page at ten

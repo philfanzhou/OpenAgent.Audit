@@ -216,7 +216,7 @@ python3 scripts/hash_admin_password.py --password '你的管理员密码'
 | `AUDIT_ADMIN_USERNAME` | `admin` | 管理员账号名 |
 | `AUDIT_ADMIN_PASSWORD_HASH` | 空 | **推荐**；与明文二选一，哈希优先 |
 | `AUDIT_ADMIN_PASSWORD` | 空 | 仅本地调试；两者都留空则**完全关闭**管理员登录 |
-| `AUDIT_ADMIN_SESSION_MINUTES` | `5` | 解锁有效期；到期自动退回普通用户 |
+| `AUDIT_ADMIN_SESSION_MINUTES` | `30` | 解锁有效期；30 分钟到期后服务端自动退回普通用户，前端弹窗提示并要求刷新网页 |
 | `AUDIT_ADMIN_COOLDOWN_MINUTES` | `10` | 解锁结束后同账号需等待此时长才能再次登录 |
 | `AUDIT_TEST_USERNAME` / `AUDIT_TEST_PASSWORD` | 空 | 兜底测试账号；留空禁用 |
 | `AUDIT_TEST_SESSION_MINUTES` | `60` | 测试账号会话时长 |

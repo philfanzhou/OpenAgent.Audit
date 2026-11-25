@@ -12,8 +12,9 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,82 @@ class LocalTraceStore:
         ]
 
 
+def _parse_obs_time(raw_ts) -> datetime | None:
+    if not raw_ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _new_session_entry(sid: str, user_id: str) -> dict:
+    return {
+        "session_id": sid, "user_id": user_id,
+        "trace_ids": set(), "first_ts": None, "last_ts": None,
+        "agent_tags": set(),
+    }
+
+
+def _fold_observations(index: dict[str, dict], observations: list[dict]) -> None:
+    """Fold observation rows into a session index, in place.
+
+    Folding is idempotent: a row delivered twice (the incremental crawl
+    deliberately re-reads a small overlap window) changes nothing, because
+    traces and tags are sets and the timestamps are min/max folded.
+    """
+    for obs in observations:
+        if not isinstance(obs, dict):
+            continue
+        sid = str(obs.get("sessionId") or "")
+        if not sid:
+            continue
+        entry = index.get(sid)
+        if entry is None:
+            entry = index[sid] = _new_session_entry(sid, str(obs.get("userId") or ""))
+        tid = obs.get("traceId")
+        if tid:
+            entry["trace_ids"].add(str(tid))
+        parsed = _parse_obs_time(obs.get("startTime"))
+        if parsed is not None:
+            entry["first_ts"] = min(entry["first_ts"] or parsed, parsed)
+            entry["last_ts"] = max(entry["last_ts"] or parsed, parsed)
+        tags = obs.get("tags") or []
+        if isinstance(tags, str):
+            tags = [tags]
+        # 与 _trace_from_dict 一致：剥掉网关打的 "agent:" 前缀，
+        # 会话列表显示干净的 agent 标识。
+        entry["agent_tags"].update(
+            t.removeprefix("agent:")
+            for t in tags if isinstance(t, str)
+        )
+
+
+def _copy_session_index(index: dict[str, dict]) -> dict[str, dict]:
+    """Deep-enough copy of a session index so an incremental fold never
+    mutates the index that concurrent readers are serving from."""
+    return {
+        sid: {**entry,
+              "trace_ids": set(entry["trace_ids"]),
+              "agent_tags": set(entry["agent_tags"])}
+        for sid, entry in index.items()
+    }
+
+
+def _index_rows(index: dict[str, dict]) -> list[dict]:
+    return [
+        {
+            "session_id": s["session_id"],
+            "user_id": s["user_id"],
+            "trace_count": len(s["trace_ids"]),
+            "first_ts": s["first_ts"],
+            "last_ts": s["last_ts"],
+            "agent_tags": sorted(s["agent_tags"]),
+        }
+        for s in index.values()
+    ]
+
+
 class LangfuseTraceStore:
     """Langfuse public-API adapter (reads + retention deletes only).
 
@@ -255,11 +332,23 @@ class LangfuseTraceStore:
         *,
         cache_ttl: float = 60.0,
         max_stale: float = 600.0,
+        full_rebuild_seconds: float = 900.0,
+        incremental_lag_seconds: float = 120.0,
+        now_wall: Callable[[], float] | None = None,
     ) -> None:
         # Session-index cache (see list_sessions). ``cache_ttl`` is how long an
         # index counts as fresh; ``max_stale`` is how long an expired index is
         # still served (while refreshing in the background) before a request
         # has to wait for a synchronous refresh.
+        #
+        # Refreshes are *incremental*: after the first full crawl the store
+        # only asks Langfuse for observations that started since the last
+        # crawl's watermark, and folds them into the existing index — traffic
+        # proportional to new conversations, not to the size of the store.
+        # A full rebuild runs every ``full_rebuild_seconds`` so deletions
+        # (retention) and late-arriving rows are reflected. The watermark is
+        # backed off by ``incremental_lag_seconds`` because Langfuse ingests
+        # asynchronously; the overlap is harmless (folding is idempotent).
         self._sessions_cache: list[dict] | None = None
         self._sessions_cache_at: float | None = None
         self._sessions_cache_lock = threading.Lock()
@@ -269,6 +358,17 @@ class LangfuseTraceStore:
         self._sessions_cache_generation = 0
         self._sessions_cache_ttl = max(float(cache_ttl), 0.0)
         self._sessions_cache_max_stale = max(float(max_stale), self._sessions_cache_ttl)
+        self._full_rebuild_seconds = max(float(full_rebuild_seconds), 0.0)
+        self._incremental_lag = timedelta(seconds=max(float(incremental_lag_seconds), 0.0))
+        # Wall clock used for the incremental watermark (injectable for tests).
+        self._wall_clock = now_wall or time.time
+        # Internal index (session_id -> entry with trace-id/tag sets). The
+        # cached ``_sessions_cache`` rows are derived from it.
+        self._session_index: dict[str, dict] | None = None
+        # monotonic instant of the last FULL crawl ...
+        self._index_full_at: float | None = None
+        # ... and the UTC instant the next incremental crawl starts from.
+        self._index_watermark: datetime | None = None
         if client is not None:
             self._client = client
         else:
@@ -507,6 +607,11 @@ class LangfuseTraceStore:
         不再无限期返回陈旧数据，请求同步等待刷新，错误照常抛出；
         * 首次调用（进程刚启动、缓存为空）同步爬取。
 
+        刷新是**增量**的：首次全量爬取后，后续刷新只向 Langfuse 请求
+        ``startTime >= 上次水位线`` 的 observation 并折叠进已有索引，流量与新会话
+        数成正比，而不是与库的大小成正比；每 ``full_rebuild_seconds`` 做一次全量
+        重建，以反映删除（保留期清理）和迟到写入的数据。
+
         时间过滤请求直接透传 Langfuse（不同窗口结果不同，不缓存）。
         """
         if from_ts is not None or to_ts is not None:
@@ -530,11 +635,15 @@ class LangfuseTraceStore:
 
     def invalidate_sessions_cache(self) -> None:
         """Drop the cached session index so the next ``list_sessions`` re-reads
-        Langfuse (for example right after retention/purge deleted traces)."""
+        Langfuse from scratch (for example right after retention/purge deleted
+        traces — an incremental refresh could not see a deletion)."""
         with self._sessions_cache_lock:
             self._sessions_cache = None
             self._sessions_cache_at = None
             self._sessions_cache_generation += 1
+            self._session_index = None
+            self._index_full_at = None
+            self._index_watermark = None
 
     def _start_background_refresh(self, max_pages: int) -> None:
         """Refresh the session index off the request thread. Never raises:
@@ -547,8 +656,50 @@ class LangfuseTraceStore:
         )
         thread.start()
 
+    def _build_index(
+        self,
+        *,
+        full: bool,
+        base_index: dict[str, dict] | None,
+        watermark: datetime | None,
+        max_pages: int,
+    ) -> tuple[dict[str, dict], datetime]:
+        """Crawl Langfuse and return ``(session_index, next_watermark)``.
+
+        ``full=True`` reads every observation; otherwise only rows with
+        ``startTime >= watermark`` are read and folded into a copy of
+        ``base_index`` (falling back to a full crawl if there is none). The
+        next watermark is the wall-clock instant the crawl *started* minus the
+        ingestion-lag margin, so nothing that lands while the pages are being
+        read is skipped.
+        """
+        crawl_started_wall = self._wall_clock()
+        if not full and watermark is not None and base_index is not None:
+            observations = self._v2_fetch_observations(
+                from_ts=watermark,
+                fields="core,basic,trace_context",
+                page_size=100, max_pages=max_pages,
+            )
+            index = _copy_session_index(base_index)
+            _fold_observations(index, observations)
+            logger.debug(
+                "langfuse session index incremental refresh: %d new observations, %d sessions",
+                len(observations), len(index),
+            )
+        else:
+            observations = self._v2_fetch_observations(
+                fields="core,basic,trace_context",
+                page_size=100, max_pages=max_pages,
+            )
+            index = {}
+            _fold_observations(index, observations)
+        next_watermark = (
+            datetime.fromtimestamp(crawl_started_wall, UTC) - self._incremental_lag
+        )
+        return index, next_watermark
+
     def _refresh_sessions(self, max_pages: int, wait: bool) -> list[dict] | None:
-        """Crawl Langfuse and replace the cached index (single-flight).
+        """Refresh the cached index from Langfuse (single-flight).
 
         ``wait=False`` returns ``None`` straight away when another refresh is
         running — there is no point in queueing a second background crawl.
@@ -564,11 +715,28 @@ class LangfuseTraceStore:
                 cached = self._sessions_cache
                 age = None if self._sessions_cache_at is None else now - self._sessions_cache_at
                 generation = self._sessions_cache_generation
+                index, full_at, watermark = (
+                    self._session_index, self._index_full_at, self._index_watermark,
+                )
             if cached is not None and age is not None and age < self._sessions_cache_ttl:
                 return [dict(s) for s in cached]
-            sessions = self._list_sessions_uncached(from_ts=None, to_ts=None, max_pages=max_pages)
+            # Incremental unless there is nothing to continue from, or the
+            # index is old enough that it is due for a full rebuild anyway.
+            full = (
+                index is None
+                or watermark is None
+                or full_at is None
+                or (now - full_at) >= self._full_rebuild_seconds
+            )
+            new_index, new_watermark = self._build_index(
+                full=full, base_index=index, watermark=watermark, max_pages=max_pages
+            )
+            sessions = _index_rows(new_index)
             with self._sessions_cache_lock:
                 if generation == self._sessions_cache_generation:
+                    self._session_index = new_index
+                    self._index_watermark = new_watermark
+                    self._index_full_at = time.monotonic() if full else full_at
                     self._sessions_cache = sessions
                     self._sessions_cache_at = time.monotonic()
             return sessions
@@ -589,7 +757,7 @@ class LangfuseTraceStore:
         *,
         max_pages: int = 1000,
     ) -> list[dict]:
-        """Aggregate sessions from the v2 observations API.
+        """Aggregate sessions from the v2 observations API, uncached.
 
         Time filtering is pushed down to the API (``fromStartTime`` /
         ``toStartTime``) so the server does the work. Sessions are grouped
@@ -601,52 +769,9 @@ class LangfuseTraceStore:
             fields="core,basic,trace_context",
             page_size=100, max_pages=max_pages,
         )
-
-        sessions: dict[str, dict] = {}
-        for obs in observations:
-            if not isinstance(obs, dict):
-                continue
-            sid = str(obs.get("sessionId") or "")
-            if not sid:
-                continue
-            entry = sessions.setdefault(
-                sid,
-                {"session_id": sid, "user_id": str(obs.get("userId") or ""),
-                 "trace_ids": set(), "first_ts": None, "last_ts": None,
-                 "agent_tags": set()},
-            )
-            tid = obs.get("traceId")
-            if tid:
-                entry["trace_ids"].add(str(tid))
-            raw_ts = obs.get("startTime")
-            if raw_ts:
-                try:
-                    parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
-                except ValueError:
-                    parsed = None
-                if parsed is not None:
-                    entry["first_ts"] = min(entry["first_ts"] or parsed, parsed)
-                    entry["last_ts"] = max(entry["last_ts"] or parsed, parsed)
-            tags = obs.get("tags") or []
-            if isinstance(tags, str):
-                tags = [tags]
-            # 与 _trace_from_dict 一致：剥掉网关打的 "agent:" 前缀，
-            # 会话列表显示干净的 agent 标识。
-            entry["agent_tags"].update(
-                t.removeprefix("agent:")
-                for t in tags if isinstance(t, str)
-            )
-        return [
-            {
-                "session_id": s["session_id"],
-                "user_id": s["user_id"],
-                "trace_count": len(s["trace_ids"]),
-                "first_ts": s["first_ts"],
-                "last_ts": s["last_ts"],
-                "agent_tags": sorted(s["agent_tags"]),
-            }
-            for s in sessions.values()
-        ]
+        index: dict[str, dict] = {}
+        _fold_observations(index, observations)
+        return _index_rows(index)
 
     # -- deletes (v4 still supports DELETE /api/public/traces/{id}) -------
 

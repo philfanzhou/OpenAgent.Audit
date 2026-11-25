@@ -60,6 +60,9 @@ body {
 .user-area { display: flex; align-items: center; gap: 10px; }
 .user-area .el-button + .el-button { margin-left: 0; }
 .role-label { padding-right: 2px; }
+/* 管理员剩余时间：快到期时变红 */
+.admin-remaining { color: #4f46e5; font-variant-numeric: tabular-nums; }
+.admin-remaining.is-low { color: #dc2626; }
 
 /* ── 页面容器 ── */
 .page { max-width: 1120px; margin: 32px auto; padding: 0 28px; }

@@ -155,6 +155,7 @@ def build_container(settings: Settings) -> AppContainer:
             tls=httpx_tls_kwargs(settings),
             cache_ttl=settings.session_cache_seconds,
             max_stale=settings.session_cache_max_stale_seconds,
+            full_rebuild_seconds=settings.session_index_full_rebuild_seconds,
         )
     else:
         trace_store = LocalTraceStore()
@@ -543,12 +544,22 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         principal = resolve_principal(request)
         if principal is None:
             raise AuthenticationError("认证失败：请先登录。")
+        # Seconds left on an active administrator unlock, so the console can
+        # close the window client-side at the same moment the server does.
+        session = container.sessions.get(request.cookies.get(_SESSION_COOKIE))
+        admin_expires_in = (
+            session.admin_seconds_remaining()
+            if session is not None and principal.is_admin
+            else None
+        )
         return {
             "username": principal.username,
             "role": principal.role,
             "is_admin": principal.is_admin,
             "can_step_up_to_admin": principal.can_step_up_to_admin,
             "role_label": ROLE_LABELS.get(principal.role, principal.role),
+            "admin_expires_in": admin_expires_in,
+            "admin_session_minutes": settings.admin_session_minutes,
         }
 
     @app.post("/v1/admin/login")
@@ -631,6 +642,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             "role": upgraded.principal.role,
             "is_admin": True,
             "expires_in": container.sessions.admin_unlock_seconds,
+            "admin_session_minutes": settings.admin_session_minutes,
         }
 
     @app.post("/v1/admin/logout")

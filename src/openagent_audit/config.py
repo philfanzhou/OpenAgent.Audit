@@ -98,10 +98,10 @@ class Settings:
     admin_username: str = "admin"
     admin_password: str = ""
     admin_password_hash: str = ""
-    # How long an unlock lasts before the session drops back to a normal user.
-    # The console is a decrypt-capable surface, so the window is deliberately
-    # short: 5 minutes.
-    admin_session_minutes: int = 5
+    # How long an unlock lasts before the session drops back to a normal user:
+    # 30 minutes. The server closes it on its own; the console additionally
+    # shows a countdown, tells the user when it has closed and reloads.
+    admin_session_minutes: int = 30
 
     # Display timezone for the console. Audit entries are always stored in UTC
     # (that is the only unambiguous record), but rendering raw UTC makes a
@@ -169,6 +169,11 @@ class Settings:
     # ``session_cache_max_stale_seconds`` does a request block on a refresh.
     session_cache_seconds: float = 60.0
     session_cache_max_stale_seconds: float = 600.0
+    # Refreshes of that index are incremental (only observations newer than
+    # the last crawl are fetched). Every ``session_index_full_rebuild_seconds``
+    # the index is rebuilt from scratch instead, so trace deletions (retention)
+    # and late-arriving rows are reflected within that interval.
+    session_index_full_rebuild_seconds: float = 900.0
 
     # Separate decrypt-svc deployment; empty = in-process decrypt (dev only).
     decrypt_svc_url: str = ""
@@ -255,7 +260,7 @@ class Settings:
             admin_username=e.get("AUDIT_ADMIN_USERNAME", "admin"),
             admin_password=e.get("AUDIT_ADMIN_PASSWORD", ""),
             admin_password_hash=e.get("AUDIT_ADMIN_PASSWORD_HASH", ""),
-            admin_session_minutes=int(e.get("AUDIT_ADMIN_SESSION_MINUTES", "5")),
+            admin_session_minutes=int(e.get("AUDIT_ADMIN_SESSION_MINUTES", "30")),
             admin_cooldown_minutes=int(e.get("AUDIT_ADMIN_COOLDOWN_MINUTES", "10")),
             sso_authority=e.get("AUDIT_SSO_AUTHORITY", ""),
             sso_client_id=e.get("AUDIT_SSO_CLIENT_ID", ""),
@@ -287,6 +292,9 @@ class Settings:
             session_cache_seconds=float(e.get("AUDIT_SESSION_CACHE_SECONDS", "60")),
             session_cache_max_stale_seconds=float(
                 e.get("AUDIT_SESSION_CACHE_MAX_STALE_SECONDS", "600")
+            ),
+            session_index_full_rebuild_seconds=float(
+                e.get("AUDIT_SESSION_INDEX_FULL_REBUILD_SECONDS", "900")
             ),
             decrypt_svc_url=e.get("AUDIT_DECRYPT_SVC_URL", ""),
             loki_url=e.get("LOKI_URL", ""),

@@ -38,6 +38,8 @@ export const api = {
     return request('/v1/sessions' + (q ? '?' + q : ''))
   },
   session: (id) => request(`/v1/sessions/${encodeURIComponent(id)}`),
+  // 仅管理员：导出链路计数 + 审计域库存 + 生效配置。
+  metrics: () => request('/internal/metrics'),
   auditLog: (params = {}) => {
     const qs = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {

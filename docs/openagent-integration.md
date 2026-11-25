@@ -66,7 +66,7 @@ audit 平台只有两种身份，OpenAgent 侧只需要回答"这个人是谁"�
 
 | 设置 | 默认 | 作用 |
 |---|---|---|
-| `AUDIT_ADMIN_SESSION_MINUTES` | 5 | 解锁有效期，到期自动退回普通用户 |
+| `AUDIT_ADMIN_SESSION_MINUTES` | 30 | 解锁有效期；30 分钟到期后自动退回普通用户，前端弹窗提示并要求刷新网页 |
 | `AUDIT_ADMIN_COOLDOWN_MINUTES` | 10 | 解锁结束后同账号需等待此时长才能再次登录 |
 
 **每一次揭示都留痕**：先写 `ENTITY_REVEAL_REQUESTED`，解密成功再写 `ENTITY_REVEALED`，
