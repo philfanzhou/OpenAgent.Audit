@@ -60,13 +60,13 @@ function adminStepUp() {
 <template>
   <header class="app-header">
     <span class="brand">OpenAgent 审计台</span>
-    <nav class="d-flex gap-1" style="flex: 1">
-      <router-link class="nav-link me-3" to="/sessions">会话</router-link>
+    <nav class="main-nav">
+      <router-link class="nav-link" to="/sessions">会话</router-link>
       <router-link v-if="auth.isAdmin" class="nav-link" to="/audit-log">审计日志</router-link>
     </nav>
-    <div v-if="auth.username" class="d-flex align-items-center gap-2">
+    <div v-if="auth.username" class="user-area">
       <span class="text-secondary small">{{ auth.username }}</span>
-      <span class="small text-secondary me-3">{{ auth.roleLabel }}</span>
+      <span class="small text-secondary role-label">{{ auth.roleLabel }}</span>
       <el-button v-if="auth.isAdmin" size="small" @click="adminLogout">退出管理员</el-button>
       <el-button v-else-if="auth.canStepUpToAdmin" size="small" @click="adminStepUp">登录管理员</el-button>
       <el-button size="small" text @click="logout">退出</el-button>

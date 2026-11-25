@@ -50,6 +50,17 @@ body {
 }
 .brand { font-weight: 650; font-size: 15px; color: #1e293b; }
 
+/* 顶栏导航与用户区：SPA 没有 Bootstrap，间距在这里自己定义
+   （之前借用 d-flex/gap-2/me-3 等 Bootstrap 工具类，打包里并不存在，
+   导致“会话/审计日志”“用户名/角色/退出”全部挤在一起）。 */
+.main-nav { flex: 1; display: flex; align-items: center; gap: 20px; }
+.nav-link { color: #4f46e5; text-decoration: none; }
+.nav-link:hover { text-decoration: underline; }
+.router-link-active { font-weight: 600; }
+.user-area { display: flex; align-items: center; gap: 10px; }
+.user-area .el-button + .el-button { margin-left: 0; }
+.role-label { padding-right: 2px; }
+
 /* ── 页面容器 ── */
 .page { max-width: 1120px; margin: 32px auto; padding: 0 28px; }
 .page-title { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 6px; }
