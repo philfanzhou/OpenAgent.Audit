@@ -9,11 +9,14 @@ runs (and is fully tested) without a live Langfuse.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -249,11 +252,23 @@ class LangfuseTraceStore:
     def __init__(
         self, base_url: str, public_key: str, secret_key: str,
         client=None, tls: dict | None = None,
+        *,
+        cache_ttl: float = 60.0,
+        max_stale: float = 600.0,
     ) -> None:
+        # Session-index cache (see list_sessions). ``cache_ttl`` is how long an
+        # index counts as fresh; ``max_stale`` is how long an expired index is
+        # still served (while refreshing in the background) before a request
+        # has to wait for a synchronous refresh.
         self._sessions_cache: list[dict] | None = None
         self._sessions_cache_at: float | None = None
         self._sessions_cache_lock = threading.Lock()
-        self._sessions_cache_ttl = 30.0  # 秒；审计台翻页不需要强一致
+        self._sessions_refresh_lock = threading.Lock()
+        # Bumped by invalidate_sessions_cache so a refresh that was already in
+        # flight cannot write its (now outdated) result back into the cache.
+        self._sessions_cache_generation = 0
+        self._sessions_cache_ttl = max(float(cache_ttl), 0.0)
+        self._sessions_cache_max_stale = max(float(max_stale), self._sessions_cache_ttl)
         if client is not None:
             self._client = client
         else:
@@ -478,27 +493,94 @@ class LangfuseTraceStore:
         *,
         max_pages: int = 1000,
     ) -> list[dict]:
-        """全量会话聚合，带 30 秒 TTL 缓存。
+        """全量会话聚合，带 stale-while-revalidate 缓存。
 
         无时间过滤的列表是审计台每次翻页都要用的热点路径，而 Langfuse 侧的
-        聚合需要分页拉取全部 observations（秒级）。缓存让翻页/跳页毫秒级响应；
-        新会话最多延迟一个 TTL 可见，审计台可接受。时间过滤请求直接透传
-        Langfuse（不同窗口结果不同，不缓存）。
+        聚合需要分页拉取全部 observations（秒级，且随数据量线性增长）。
+        缓存策略：
+
+        * 索引在 ``cache_ttl`` 内视为新鲜，直接返回，不打 Langfuse；
+        * 过了 TTL 但未超过 ``max_stale``：**立即返回旧索引**，同时在后台
+          线程刷新一次（并发请求只触发一次刷新）。翻页/刷新网页始终毫秒级，
+          新会话最多延迟一个 TTL + 一次刷新耗时可见，审计台可接受；
+        * 旧索引超过 ``max_stale``（例如 Langfuse 一直不可用导致刷新失败），
+        不再无限期返回陈旧数据，请求同步等待刷新，错误照常抛出；
+        * 首次调用（进程刚启动、缓存为空）同步爬取。
+
+        时间过滤请求直接透传 Langfuse（不同窗口结果不同，不缓存）。
         """
         if from_ts is not None or to_ts is not None:
             return self._list_sessions_uncached(
                 from_ts=from_ts, to_ts=to_ts, max_pages=max_pages
             )
+        now = time.monotonic()
         with self._sessions_cache_lock:
             cached = self._sessions_cache
-            age = None if self._sessions_cache_at is None else time.monotonic() - self._sessions_cache_at
-        if cached is not None and age is not None and age < self._sessions_cache_ttl:
-            return [dict(s) for s in cached]
-        sessions = self._list_sessions_uncached(from_ts=None, to_ts=None, max_pages=max_pages)
+            age = None if self._sessions_cache_at is None else now - self._sessions_cache_at
+        if cached is not None and age is not None:
+            if age < self._sessions_cache_ttl:
+                return [dict(s) for s in cached]
+            if age < self._sessions_cache_max_stale:
+                # 过期但还能用：后台刷新，当前请求拿旧数据立即返回。
+                self._start_background_refresh(max_pages)
+                return [dict(s) for s in cached]
+        refreshed = self._refresh_sessions(max_pages, wait=True)
+        assert refreshed is not None  # wait=True 总是返回索引
+        return [dict(s) for s in refreshed]
+
+    def invalidate_sessions_cache(self) -> None:
+        """Drop the cached session index so the next ``list_sessions`` re-reads
+        Langfuse (for example right after retention/purge deleted traces)."""
         with self._sessions_cache_lock:
-            self._sessions_cache = sessions
-            self._sessions_cache_at = time.monotonic()
-        return [dict(s) for s in sessions]
+            self._sessions_cache = None
+            self._sessions_cache_at = None
+            self._sessions_cache_generation += 1
+
+    def _start_background_refresh(self, max_pages: int) -> None:
+        """Refresh the session index off the request thread. Never raises:
+        the caller already has data to return."""
+        thread = threading.Thread(
+            target=self._refresh_sessions,
+            args=(max_pages, False),
+            name="langfuse-sessions-refresh",
+            daemon=True,
+        )
+        thread.start()
+
+    def _refresh_sessions(self, max_pages: int, wait: bool) -> list[dict] | None:
+        """Crawl Langfuse and replace the cached index (single-flight).
+
+        ``wait=False`` returns ``None`` straight away when another refresh is
+        running — there is no point in queueing a second background crawl.
+        ``wait=True`` blocks until it is our turn, then re-checks: if the
+        refresh that just finished made the index fresh again we reuse it
+        instead of crawling again.
+        """
+        if not self._sessions_refresh_lock.acquire(blocking=wait):
+            return None
+        try:
+            now = time.monotonic()
+            with self._sessions_cache_lock:
+                cached = self._sessions_cache
+                age = None if self._sessions_cache_at is None else now - self._sessions_cache_at
+                generation = self._sessions_cache_generation
+            if cached is not None and age is not None and age < self._sessions_cache_ttl:
+                return [dict(s) for s in cached]
+            sessions = self._list_sessions_uncached(from_ts=None, to_ts=None, max_pages=max_pages)
+            with self._sessions_cache_lock:
+                if generation == self._sessions_cache_generation:
+                    self._sessions_cache = sessions
+                    self._sessions_cache_at = time.monotonic()
+            return sessions
+        except Exception:
+            if wait:
+                raise
+            # Background refresh: the stale index stays in place and the next
+            # request retries. Surface it in the logs rather than swallowing.
+            logger.warning("langfuse session index background refresh failed", exc_info=True)
+            return None
+        finally:
+            self._sessions_refresh_lock.release()
 
     def _list_sessions_uncached(
         self,

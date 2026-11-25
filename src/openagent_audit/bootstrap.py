@@ -114,6 +114,8 @@ def build_trace_store(settings: Settings):
             settings.langfuse_public_key,
             settings.langfuse_secret_key,
             tls=httpx_tls_kwargs(settings),
+            cache_ttl=settings.session_cache_seconds,
+            max_stale=settings.session_cache_max_stale_seconds,
         )
     from openagent_audit.tracing.trace_store import LocalTraceStore
 

@@ -161,6 +161,14 @@ class Settings:
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+    # Session-index cache (Langfuse mode). Building the session list means
+    # paging through every observation, so the console serves the last built
+    # index for ``session_cache_seconds`` without touching Langfuse. An index
+    # older than that is still returned immediately while one background
+    # refresh runs (page flips never wait for the crawl); only past
+    # ``session_cache_max_stale_seconds`` does a request block on a refresh.
+    session_cache_seconds: float = 60.0
+    session_cache_max_stale_seconds: float = 600.0
 
     # Separate decrypt-svc deployment; empty = in-process decrypt (dev only).
     decrypt_svc_url: str = ""
@@ -276,6 +284,10 @@ class Settings:
             langfuse_host=e.get("LANGFUSE_HOST", "http://localhost:3000"),
             langfuse_public_key=e.get("LANGFUSE_PUBLIC_KEY", ""),
             langfuse_secret_key=e.get("LANGFUSE_SECRET_KEY", ""),
+            session_cache_seconds=float(e.get("AUDIT_SESSION_CACHE_SECONDS", "60")),
+            session_cache_max_stale_seconds=float(
+                e.get("AUDIT_SESSION_CACHE_MAX_STALE_SECONDS", "600")
+            ),
             decrypt_svc_url=e.get("AUDIT_DECRYPT_SVC_URL", ""),
             loki_url=e.get("LOKI_URL", ""),
             ca_bundle_path=_first_non_empty(

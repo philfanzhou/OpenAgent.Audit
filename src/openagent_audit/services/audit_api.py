@@ -37,6 +37,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 from openagent_audit.bootstrap import (
     build_cipher,
@@ -152,6 +153,8 @@ def build_container(settings: Settings) -> AppContainer:
             settings.langfuse_public_key,
             settings.langfuse_secret_key,
             tls=httpx_tls_kwargs(settings),
+            cache_ttl=settings.session_cache_seconds,
+            max_stale=settings.session_cache_max_stale_seconds,
         )
     else:
         trace_store = LocalTraceStore()
@@ -233,19 +236,39 @@ def search_sessions(
     * ``browse_blocked`` becomes True when more than ``MAX_VISIBLE`` sessions
       exist and no filter was supplied: the console then asks for a search
       instead of paging through an unbounded list.
+
+    This runs on every page flip, so it must stay off the Langfuse hot path:
+    the session index comes from the store's cache, and the demo purge only
+    runs when that index actually contains demo rows. (The purge itself needs a
+    full, uncached ``list_traces`` scan — doing it unconditionally used to
+    re-crawl every observation on each paging click.)
     """
     from openagent_audit.services.demo_seed import is_demo_session, purge_demo_data
+
+    def index() -> list[dict]:
+        return (
+            container.trace_store.list_sessions()
+            if hasattr(container.trace_store, "list_sessions")
+            else []
+        )
+
+    sessions = index()
 
     # Once real conversations exist the seeded samples are removed from the
     # store, not merely filtered out: after connecting to OpenAgent the console
     # must show platform data only, with nothing left to mistake for it.
-    purge_demo_data(container.trace_store)
-
-    sessions = (
-        container.trace_store.list_sessions()
-        if hasattr(container.trace_store, "list_sessions")
-        else []
-    )
+    # Only worth a (second) full scan when the index really holds demo rows;
+    # in production it never does, so this costs nothing per request.
+    if any(is_demo_session(s.get("session_id", "")) for s in sessions) and any(
+        not is_demo_session(s.get("session_id", "")) for s in sessions
+    ):
+        if purge_demo_data(container.trace_store):
+            # Traces were just deleted: drop the (now outdated) cached index so
+            # the reload and the next page flip read the purged store.
+            invalidate = getattr(container.trace_store, "invalidate_sessions_cache", None)
+            if callable(invalidate):
+                invalidate()
+            sessions = index()
 
     has_real = any(not is_demo_session(s.get("session_id", "")) for s in sessions)
     demo_hidden = has_real and not include_demo
@@ -374,6 +397,9 @@ def display_range_to_utc(
 
 def create_audit_app(container: AppContainer) -> FastAPI:
     app = FastAPI(title="openagent-audit audit-api", docs_url=None, redoc_url=None)
+    # The SPA bundle is ~1 MB uncompressed; gzipping it (and JSON replies) cuts
+    # what a browser refresh has to download on every cold load by ~80%.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.mount("/static", StaticFiles(directory=str(_TEMPLATES_DIR.parent / "static")), name="static")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     settings = container.settings
