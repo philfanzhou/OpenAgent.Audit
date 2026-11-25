@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { api } from '../api'
 import { auth } from '../store'
 
@@ -25,6 +25,14 @@ async function load() {
   }
 }
 onMounted(load)
+
+// 管理员到期/退出后立刻清掉指标，不让管理员数据留在页面上。
+watch(() => auth.isAdmin, (isAdmin) => {
+  if (!isAdmin) {
+    data.value = null
+    denied.value = true
+  }
+})
 
 // 导出链路健康度：前两项 > 0 必须排查（丢弃 = 可观测性丢失，不是明文泄漏）
 const CARDS = [

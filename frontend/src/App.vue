@@ -1,22 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { api } from './api'
-import { auth, armAdminExpiry, clearPrincipal, setPrincipal } from './store'
+import { auth, armAdminExpiry, clearPrincipal } from './store'
 
 const router = useRouter()
-
-onMounted(async () => {
-  // 预热身份信息（登录页之外的页面都需要）
-  if (!auth.loaded && router.currentRoute.value.path !== '/login') {
-    try {
-      setPrincipal(await api.me())
-    } catch {
-      /* 未登录由路由守卫处理 */
-    }
-  }
-})
 
 // 顶栏管理员剩余时间：每秒刷新一次。
 const nowMs = ref(Date.now())
@@ -32,22 +21,35 @@ const adminRemaining = computed(() => {
 })
 const adminExpiresIn = computed(() => Math.ceil((auth.adminExpiresAt - nowMs.value) / 1000))
 
+// 身份信息由路由守卫在进入页面前加载（见 router.js），这里不再重复请求。
+
+// 退出：即使服务端会话已经失效（401），也要清掉本地状态并回到登录页。
 async function logout() {
-  await api.logout()
-  clearPrincipal()
-  router.push('/login')
+  try {
+    await api.logout()
+  } catch {
+    /* 会话已失效：本地照样退出 */
+  } finally {
+    clearPrincipal()
+    router.push('/login')
+  }
 }
 
 async function adminLogout() {
-  await api.adminLogout()
-  auth.isAdmin = false
-  auth.canStepUpToAdmin = true
-  auth.adminExpiresAt = 0
-  ElMessage.success('已退出管理员')
+  try {
+    await api.adminLogout()
+    ElMessage.success('已退出管理员')
+  } catch (err) {
+    ElMessage.error(err.message || '退出管理员失败')
+  } finally {
+    auth.isAdmin = false
+    auth.canStepUpToAdmin = true
+    auth.adminExpiresAt = 0
+  }
 }
 
 function adminStepUp() {
-  ElMessageBox.prompt('账号：admin\n请输入管理员密码', '登录管理员', {
+  ElMessageBox.prompt('请输入管理员密码', '登录管理员', {
     inputType: 'password',
     inputPlaceholder: '管理员密码',
     confirmButtonText: '登录',

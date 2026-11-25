@@ -138,10 +138,7 @@ def seed_demo_data(settings: Settings, store: LocalTraceStore, db) -> int:
     )
     # Idempotent: demo rows go into an EMPTY local store only, once. Real
     # data never mixes in here, and production (Langfuse mode) never seeds.
-    existing = store.list_traces()
-    if existing:
-        return 0
-    if any(not is_demo_session(t.session_id) for t in existing):
+    if store.list_traces():
         return 0
     conversations = list(_SEED_CONVERSATIONS) + _bulk_conversations()
     now = datetime.now(UTC)

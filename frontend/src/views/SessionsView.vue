@@ -11,6 +11,7 @@ const total = ref(0)
 const page = ref(1)
 const totalPages = ref(1)
 const browseBlocked = ref(false)
+const indexTruncated = ref(false)
 const maxVisible = ref(200)
 const zoneLabel = ref('CST+08:00')
 
@@ -22,8 +23,13 @@ const jumpTo = ref('')
 const fromTs = computed(() => (range.value?.[0] ?? ''))
 const toTs = computed(() => (range.value?.[1] ?? ''))
 
+// 请求序号：筛选/翻页连续操作时，只有最后一次请求的结果会被采用，
+// 先发出但后返回的旧响应不会覆盖新结果。
+let requestSeq = 0
+
 async function load() {
   loading.value = true
+  const my = ++requestSeq
   try {
     const data = await api.sessions({
       page: page.value,
@@ -32,15 +38,19 @@ async function load() {
       to_ts: toTs.value,
       agent: agent.value
     })
+    if (my !== requestSeq) return
     sessions.value = data.sessions ?? []
     total.value = data.total ?? 0
     totalPages.value = data.total_pages ?? 1
     page.value = data.page ?? 1
     browseBlocked.value = data.browse_blocked ?? false
+    indexTruncated.value = data.index_truncated ?? false
     maxVisible.value = data.browse_threshold ?? 200
     zoneLabel.value = data.display_zone_label ?? zoneLabel.value
+  } catch (err) {
+    if (my === requestSeq) ElMessage.error(err.message || '加载会话失败')
   } finally {
-    loading.value = false
+    if (my === requestSeq) loading.value = false
   }
 }
 
@@ -169,7 +179,7 @@ onMounted(load)
       />
       <form class="jump-form" @submit.prevent="jump">
         <span class="jump-label">跳至第</span>
-        <el-input v-model="jumpTo" class="jump-input" placeholder="页码" @keyup.enter="jump" />
+        <el-input v-model="jumpTo" class="jump-input" placeholder="页码" />
         <span class="jump-label">页</span>
         <el-button type="primary" plain size="small" native-type="submit">跳转</el-button>
       </form>
@@ -182,6 +192,15 @@ onMounted(load)
       show-icon
       class="blocked-alert"
       :title="`会话数量（${total}）超过 ${maxVisible} 条，请用搜索条件缩小范围`"
+    />
+    <el-alert
+      v-if="indexTruncated"
+      type="error"
+      :closable="false"
+      show-icon
+      class="blocked-alert"
+      title="会话索引不完整"
+      description="审计库中的记录数超过了单次索引读取的上限（10 万条 observation），较早的会话未进入列表。请联系管理员调高索引上限，或用时间范围搜索较早的数据。"
     />
   </div>
 </template>

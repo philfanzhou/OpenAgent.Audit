@@ -232,16 +232,23 @@ class SsoClient:
                 discovery["userinfo_endpoint"],
                 headers={"Authorization": f"Bearer {token['access_token']}"},
             )
-            if self._client is None:
-                await oauth.aclose()
         except SsoError:
             raise
         except Exception as exc:
             raise SsoError("SSO 登录失败，请稍后重试或使用测试账号。") from exc
+        finally:
+            # Also runs on the failure paths above: a failed token exchange
+            # or userinfo request used to leak the client's connection pool.
+            if self._client is None and "oauth" in locals():
+                await oauth.aclose()
 
         if response.status_code != 200:
             raise SsoError("SSO 登录失败：无法获取用户身份。")
         claims = response.json()
+        if not isinstance(claims, dict):
+            # userinfo answered with something that is not a claims object
+            # (an error page, an array...): fail the login, do not 500.
+            raise SsoError("SSO 用户信息格式异常，请联系管理员。")
 
         # Some SSO deployments keep human-readable identity in the id_token
         # rather than userinfo. Merge both, userinfo winning: everything here
@@ -261,9 +268,6 @@ class SsoClient:
         username = _first_claim(claims, ("preferred_username", "upn", "username", "name", "loginname", "login_name", "account", "employeeid", "employee_id", "sub"))
         if not username:
             raise SsoError("SSO 未返回可用的用户标识，请联系管理员。")
-
-        if not isinstance(claims, dict):
-            raise SsoError("SSO 用户信息格式异常，请联系管理员。")
 
         return SsoIdentity(
             username=username,

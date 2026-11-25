@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { auth } from '../store'
@@ -22,8 +22,12 @@ const jumpTo = ref('')
 const fromTs = computed(() => (range.value?.[0] ?? ''))
 const toTs = computed(() => (range.value?.[1] ?? ''))
 
+// 请求序号：同 SessionsView，只有最后一次请求的结果会被采用。
+let requestSeq = 0
+
 async function load() {
   loading.value = true
+  const my = ++requestSeq
   try {
     const data = await api.auditLog({
       page: page.value,
@@ -33,6 +37,7 @@ async function load() {
       role: role.value,
       action: action.value
     })
+    if (my !== requestSeq) return
     entries.value = data.entries ?? []
     total.value = data.total ?? 0
     totalPages.value = data.total_pages ?? 1
@@ -40,8 +45,10 @@ async function load() {
     maxVisible.value = data.max_visible ?? 200
     verification.value = data.verification ?? null
     zoneLabel.value = data.display_zone_label ?? zoneLabel.value
+  } catch (err) {
+    if (my === requestSeq) ElMessage.error(err.message || '加载审计日志失败')
   } finally {
-    loading.value = false
+    if (my === requestSeq) loading.value = false
   }
 }
 
@@ -73,6 +80,15 @@ function jump() {
 onMounted(() => {
   if (!auth.isAdmin) return
   load()
+})
+
+// 管理员到期/退出后立刻清掉已加载的日志，不让管理员数据留在页面上。
+watch(() => auth.isAdmin, (isAdmin) => {
+  if (!isAdmin) {
+    entries.value = []
+    verification.value = null
+    total.value = 0
+  }
 })
 </script>
 
@@ -175,7 +191,7 @@ onMounted(() => {
       />
       <form class="jump-form" @submit.prevent="jump">
         <span class="jump-label">跳至第</span>
-        <el-input v-model="jumpTo" class="jump-input" placeholder="页码" @keyup.enter="jump" />
+        <el-input v-model="jumpTo" class="jump-input" placeholder="页码" />
         <span class="jump-label">页</span>
         <el-button type="primary" plain size="small" native-type="submit">跳转</el-button>
       </form>

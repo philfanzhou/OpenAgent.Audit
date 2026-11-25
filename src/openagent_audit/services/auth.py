@@ -143,33 +143,6 @@ def check(principal: Principal | None, permission: str) -> Principal:
 
 
 # ---------------------------------------------------------------------------
-# Password verification for the administrator account
-# ---------------------------------------------------------------------------
-
-
-def _constant_time_equals(left: str, right: str) -> bool:
-    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
-
-
-def verify_admin_password(settings: Settings, username: str, password: str) -> bool:
-    """Check the administrator credentials.
-
-    Both fields are compared in constant time, and an unknown username is
-    still compared against the configured one so the response time does not
-    reveal whether the account exists.
-    """
-    expected_user = settings.admin_username
-    expected_password = settings.admin_password
-    if not expected_password:
-        # Refuse rather than allow an empty password to unlock decryption.
-        return False
-
-    user_ok = _constant_time_equals(username or "", expected_user)
-    password_ok = _constant_time_equals(password or "", expected_password)
-    return user_ok and password_ok
-
-
-# ---------------------------------------------------------------------------
 # Session store
 # ---------------------------------------------------------------------------
 
@@ -203,7 +176,13 @@ def hash_admin_password(password: str, *, iterations: int = 210_000) -> str:
 
 
 def verify_password_hash(stored: str, password: str) -> bool:
-    """Check *password* against a hash produced by :func:`hash_admin_password`."""
+    """Check *password* against a hash produced by :func:`hash_admin_password`.
+
+    A malformed ``AUDIT_ADMIN_PASSWORD_HASH`` must fail the login, not crash
+    the endpoint: every step that can raise (including the PBKDF2 call, which
+    rejects zero/negative and absurdly large iteration counts) sits inside
+    the ``try``.
+    """
     import base64
 
     try:
@@ -211,12 +190,14 @@ def verify_password_hash(stored: str, password: str) -> bool:
         if scheme != _SCHEME:
             return False
         iterations = int(iterations_text)
+        if not 1 <= iterations <= 10_000_000:
+            return False
         salt = base64.b64decode(salt_b64)
         expected = base64.b64decode(digest_b64)
-    except (ValueError, TypeError):
+        candidate = _hash_password(password, salt=salt, iterations=iterations)
+    except (ValueError, TypeError, OverflowError):
         return False
 
-    candidate = _hash_password(password, salt=salt, iterations=iterations)
     return hmac.compare_digest(candidate, expected)
 
 
@@ -244,6 +225,25 @@ class Session:
         if not self.is_admin_unlocked():
             return None
         return max(int((self.admin_until - time.time()) // 1) + 1, 1)
+
+
+def _downgrade(session: Session) -> Session:
+    """The same browser session back at the ``user`` role.
+
+    Everything about *who* the caller is must survive the downgrade — notably
+    ``ephemeral``. Rebuilding the principal from just the username used to
+    erase that marker, which let the local test account step up to
+    administrator right after an (always allowed) ``/v1/admin/logout``.
+    """
+    return Session(
+        token=session.token,
+        principal=Principal(
+            username=session.principal.username,
+            role=ROLE_USER,
+            ephemeral=session.principal.ephemeral,
+        ),
+        created_at=session.created_at,
+    )
 
 
 class SessionStore:
@@ -314,11 +314,7 @@ class SessionStore:
                 # Unlock just expired: fall back to an ordinary user and start
                 # the cooldown for this account.
                 self._admin_ended_at[session.principal.username] = now
-                downgraded = Session(
-                    token=session.token,
-                    principal=Principal(username=session.principal.username, role=ROLE_USER),
-                    created_at=session.created_at,
-                )
+                downgraded = _downgrade(session)
                 self._sessions[token] = downgraded
                 return downgraded
             return session
@@ -386,19 +382,22 @@ class SessionStore:
             self._sessions[token] = upgraded
             return upgraded
 
-    def revoke_admin(self, token: str) -> None:
-        """Drop the administrator role immediately and start the cooldown."""
+    def revoke_admin(self, token: str) -> bool:
+        """Drop the administrator role immediately and start the cooldown.
+
+        Returns ``False`` when the session was not an administrator session,
+        so the caller can skip the cooldown and the audit record (logout is
+        then a no-op rather than a privileged event).
+        """
         with self._lock:
             session = self._sessions.get(token)
             if session is None:
-                return
-            if session.principal.is_admin:
+                return False
+            was_admin = session.principal.is_admin
+            if was_admin:
                 self._admin_ended_at[session.principal.username] = time.time()
-            self._sessions[token] = Session(
-                token=session.token,
-                principal=Principal(username=session.principal.username, role=ROLE_USER),
-                created_at=session.created_at,
-            )
+            self._sessions[token] = _downgrade(session)
+            return was_admin
 
     def drop(self, token: str | None) -> None:
         if not token:
@@ -494,8 +493,11 @@ class IdentityResolver:
         if expected_user == self._settings.admin_username:
             return None
 
-        user_ok = hmac.compare_digest(username or "", expected_user)
-        password_ok = hmac.compare_digest(password or "", expected_password)
+        # ``compare_digest`` only accepts ASCII str; compare the bytes so a
+        # Chinese username (or any non-ASCII input) is simply a wrong login
+        # instead of a TypeError -> 500.
+        user_ok = hmac.compare_digest((username or "").encode(), expected_user.encode())
+        password_ok = hmac.compare_digest((password or "").encode(), expected_password.encode())
         if not (user_ok and password_ok):
             return None
         return Principal(username=expected_user, role=ROLE_USER, ephemeral=True)

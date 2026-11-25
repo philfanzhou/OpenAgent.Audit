@@ -204,7 +204,8 @@ class LocalTraceStore:
             )
             entry["trace_count"] += 1
             entry["last_ts"] = max(entry["last_ts"], t.timestamp)
-            entry["agent_tags"].add(t.agent_tag)
+            # Same display rule as the Langfuse path: strip the "agent:" prefix.
+            entry["agent_tags"].add(t.agent_tag.removeprefix("agent:"))
         return [
             {
                 "session_id": s["session_id"],
@@ -369,6 +370,12 @@ class LangfuseTraceStore:
         self._index_full_at: float | None = None
         # ... and the UTC instant the next incremental crawl starts from.
         self._index_watermark: datetime | None = None
+        self._index_truncated = False
+        self._last_crawl_truncated = False
+        # monotonic instant before which no refresh is retried after a failed
+        # one, so a dead Langfuse cannot make every request wait on a crawl.
+        self._retry_not_before = 0.0
+        self._retry_backoff = timedelta(seconds=30)
         if client is not None:
             self._client = client
         else:
@@ -394,6 +401,7 @@ class LangfuseTraceStore:
         fields: str = _V2_FIELDS_LIST,
         page_size: int = 100,
         max_pages: int | None = None,
+        stats: dict | None = None,
     ) -> list[dict]:
         """Page through ``GET /api/public/v2/observations`` following the
         cursor, until the cursor is absent or ``max_pages`` is hit.
@@ -402,6 +410,9 @@ class LangfuseTraceStore:
         An empty ``data`` array can still carry a cursor, so we must keep
         paging until the cursor is *absent* — terminating on an empty page
         would silently truncate large result sets.
+
+        ``stats`` (optional) receives ``{"truncated": True}`` when the crawl
+        stopped at ``max_pages`` with more rows left behind.
         """
 
         rows: list[dict] = []
@@ -435,6 +446,14 @@ class LangfuseTraceStore:
             if not next_cursor:
                 break
             if max_pages is not None and pages >= max_pages:
+                # Stopped early with rows still unread: say so instead of
+                # returning a silently truncated result.
+                if stats is not None:
+                    stats["truncated"] = True
+                logger.warning(
+                    "langfuse observations crawl stopped at max_pages=%d with more rows left; "
+                    "the result is incomplete", max_pages,
+                )
                 break
             cursor = next_cursor
 
@@ -629,6 +648,11 @@ class LangfuseTraceStore:
                 # 过期但还能用：后台刷新，当前请求拿旧数据立即返回。
                 self._start_background_refresh(max_pages)
                 return [dict(s) for s in cached]
+            if now < self._retry_not_before:
+                # A refresh just failed moments ago and Langfuse is still
+                # down: keep serving the last index instead of making every
+                # request queue on the same failing crawl.
+                return [dict(s) for s in cached]
         refreshed = self._refresh_sessions(max_pages, wait=True)
         assert refreshed is not None  # wait=True 总是返回索引
         return [dict(s) for s in refreshed]
@@ -674,11 +698,12 @@ class LangfuseTraceStore:
         read is skipped.
         """
         crawl_started_wall = self._wall_clock()
+        stats: dict = {}
         if not full and watermark is not None and base_index is not None:
             observations = self._v2_fetch_observations(
                 from_ts=watermark,
                 fields="core,basic,trace_context",
-                page_size=100, max_pages=max_pages,
+                page_size=100, max_pages=max_pages, stats=stats,
             )
             index = _copy_session_index(base_index)
             _fold_observations(index, observations)
@@ -686,17 +711,31 @@ class LangfuseTraceStore:
                 "langfuse session index incremental refresh: %d new observations, %d sessions",
                 len(observations), len(index),
             )
+            if stats.get("truncated"):
+                # Rows were left unread, so advancing the watermark would skip
+                # them forever: keep it and let the next crawl read them.
+                self._last_crawl_truncated = True
+                return index, watermark
         else:
             observations = self._v2_fetch_observations(
                 fields="core,basic,trace_context",
-                page_size=100, max_pages=max_pages,
+                page_size=100, max_pages=max_pages, stats=stats,
             )
             index = {}
             _fold_observations(index, observations)
         next_watermark = (
             datetime.fromtimestamp(crawl_started_wall, UTC) - self._incremental_lag
         )
+        self._last_crawl_truncated = bool(stats.get("truncated"))
         return index, next_watermark
+
+    @property
+    def sessions_index_truncated(self) -> bool:
+        """True when the cached session index was built from a crawl that hit
+        ``max_pages``: the list is missing older data and the console should
+        say so rather than look complete."""
+        with self._sessions_cache_lock:
+            return bool(self._index_truncated)
 
     def _refresh_sessions(self, max_pages: int, wait: bool) -> list[dict] | None:
         """Refresh the cached index from Langfuse (single-flight).
@@ -737,10 +776,12 @@ class LangfuseTraceStore:
                     self._session_index = new_index
                     self._index_watermark = new_watermark
                     self._index_full_at = time.monotonic() if full else full_at
+                    self._index_truncated = self._last_crawl_truncated
                     self._sessions_cache = sessions
                     self._sessions_cache_at = time.monotonic()
             return sessions
         except Exception:
+            self._retry_not_before = time.monotonic() + self._retry_backoff.total_seconds()
             if wait:
                 raise
             # Background refresh: the stale index stays in place and the next

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
@@ -7,7 +7,8 @@ import { auth, setPrincipal } from '../store'
 import { parseEntSegments } from '../entmark'
 
 const route = useRoute()
-const sessionId = route.params.id
+// 会话 id 取响应式的路由参数：同一组件在不同会话间切换时也会重新加载。
+const sessionId = computed(() => route.params.id)
 
 const loading = ref(true)
 const error = ref('')
@@ -21,13 +22,17 @@ const revealable = computed(() => auth.isAdmin)
 
 async function load() {
   loading.value = true
+  error.value = ''
+  const id = sessionId.value
+  traces.value = []
   try {
-    const data = await api.session(sessionId)
+    const data = await api.session(id)
+    if (id !== sessionId.value) return // 已切换到别的会话
     traces.value = data.traces ?? []
   } catch (err) {
-    error.value = err.message
+    if (id === sessionId.value) error.value = err.message || '加载会话失败'
   } finally {
-    loading.value = false
+    if (id === sessionId.value) loading.value = false
   }
 }
 
@@ -49,6 +54,10 @@ async function onChipClick(segment) {
 }
 
 onMounted(load)
+watch(sessionId, () => {
+  revealed.value = {}
+  load()
+})
 </script>
 
 <template>
@@ -64,7 +73,7 @@ onMounted(load)
       </template>
     </p>
 
-    <el-button size="small" @click="$router.back()">← 返回会话列表</el-button>
+    <router-link class="back-link" to="/sessions">← 返回会话列表</router-link>
 
     <el-alert v-if="error" type="error" :title="error" class="mt-3" :closable="false" />
 

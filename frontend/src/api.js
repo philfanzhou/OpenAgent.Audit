@@ -6,11 +6,22 @@ export class ApiError extends Error {
   }
 }
 
+// 登录类接口自己处理 401（密码错误等），不触发跳转。
+const LOGIN_URL = /\/login/
+
 async function request(url, options = {}) {
   const resp = await fetch(url, {
     credentials: 'same-origin',
     ...options
   })
+  // 会话已失效（登录态到期，或服务端重启清空了内存会话）：整页回到登录页，
+  // 登录后回到当前页。这里故意不 resolve，页面在跳转期间不再处理这次请求，
+  // 界面上也就不会闪出一条错误提示。
+  if (resp.status === 401 && !LOGIN_URL.test(url)) {
+    const target = window.location.pathname + window.location.search
+    window.location.assign('/login?redirect=' + encodeURIComponent(target))
+    return new Promise(() => {})
+  }
   let body = null
   try {
     body = await resp.json()

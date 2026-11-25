@@ -19,6 +19,7 @@ decrypt service's response, and every access is logged.
 from __future__ import annotations
 
 import html
+import logging
 import os
 import re
 import secrets
@@ -26,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import (
     FileResponse,
@@ -80,6 +82,7 @@ from openagent_audit.tracing.drop_monitor import DropMonitor
 from openagent_audit.tracing.trace_store import LangfuseTraceStore, LocalTraceStore
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+logger = logging.getLogger(__name__)
 _SESSION_COOKIE = "openagent_audit_session"
 # Platform token handed to the browser, used to resolve who is signed in.
 _IDENTITY_COOKIE = "openagent_audit_identity"
@@ -349,12 +352,14 @@ def _admin_credentials_match(settings: Settings, username: str, password: str) -
     """
     import hmac
 
-    username_ok = hmac.compare_digest(username or "", settings.admin_username)
+    # ``compare_digest`` only accepts ASCII str: compare bytes so a non-ASCII
+    # username cannot raise (it is simply a wrong login).
+    username_ok = hmac.compare_digest((username or "").encode(), settings.admin_username.encode())
 
     if settings.admin_password_hash:
         password_ok = verify_password_hash(settings.admin_password_hash, password or "")
     elif settings.admin_password:
-        password_ok = hmac.compare_digest(password or "", settings.admin_password)
+        password_ok = hmac.compare_digest((password or "").encode(), (settings.admin_password or "").encode())
     else:
         # No credential configured: the administrator login is closed rather
         # than open. An empty password must never unlock decryption.
@@ -464,15 +469,25 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         }
 
     def time_range(from_ts: str | None, to_ts: str | None):
+        """Parse ``from_ts``/``to_ts`` query values into aware UTC datetimes.
+
+        A value without an offset is interpreted in the console's *display*
+        zone, exactly like ``/v1/sessions`` and the audit log do. Taking it
+        as the process-local zone instead put the detail endpoint eight hours
+        away from the list in a UTC container.
+        """
         def parse(value: str | None, name: str) -> datetime | None:
             if not value:
                 return None
             try:
-                return datetime.fromisoformat(value)
+                parsed = datetime.fromisoformat(value)
             except ValueError:
                 raise HTTPException(
                     status_code=422, detail=f"{name} 不是合法的 ISO-8601 时间"
                 ) from None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=display_tz)
+            return parsed.astimezone(UTC)
 
         return parse(from_ts, "from_ts"), parse(to_ts, "to_ts")
 
@@ -582,7 +597,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
                 role=session.principal.role,
                 action="ADMIN_LOGIN_BLOCKED",
                 object_type="admin",
-                object_id=body.username[:200],
+                object_id=settings.admin_username,
                 detail={
                     "session_user": session.principal.username,
                     "retry_after_seconds": waiting,
@@ -593,13 +608,17 @@ def create_audit_app(container: AppContainer) -> FastAPI:
 
         # 管理账号由服务端配置（AUDIT_ADMIN_USERNAME）固定，客户端只需提供密码；
         # 此前前端误传企业账号用户名，导致密码正确也永远校验失败。
+        # The server validates the configured administrator account and
+        # ignores whatever username the client typed (the SPA sends the
+        # signed-in user's name there), so record the account that was
+        # actually checked rather than a misleading "attempted" name.
         if not _admin_credentials_match(settings, settings.admin_username, body.password):
             container.audit.append(
                 actor=session.principal.username,
                 role=session.principal.role,
                 action="ADMIN_LOGIN_FAILED",
                 object_type="admin",
-                object_id=body.username[:200],
+                object_id=settings.admin_username,
                 detail={"session_user": session.principal.username},
             )
             raise AuthenticationError("管理员账号或密码错误。")
@@ -651,15 +670,18 @@ def create_audit_app(container: AppContainer) -> FastAPI:
         session = container.sessions.get(session_token)
         if session is None:
             raise AuthenticationError("认证失败：请先登录。")
-        container.sessions.revoke_admin(session_token)  # type: ignore[arg-type]
-        container.audit.append(
-            actor=session.principal.username,
-            role=session.principal.role,
-            action="ADMIN_LOGOUT",
-            object_type="admin",
-            object_id=settings.admin_username,
-            detail={"session_user": session.principal.username},
-        )
+        was_admin = container.sessions.revoke_admin(session_token)  # type: ignore[arg-type]
+        if was_admin:
+            # Only a real administrator logout is an auditable privileged
+            # event; for an ordinary session this endpoint is a no-op.
+            container.audit.append(
+                actor=session.principal.username,
+                role=session.principal.role,
+                action="ADMIN_LOGOUT",
+                object_type="admin",
+                object_id=settings.admin_username,
+                detail={"session_user": session.principal.username},
+            )
         return {"role": ROLE_USER}
 
     # -- reading -----------------------------------------------------------
@@ -698,6 +720,11 @@ def create_audit_app(container: AppContainer) -> FastAPI:
             "browse_threshold": MAX_VISIBLE,
             "demo_hidden": demo_hidden,
             "display_zone_label": display_zone_label,
+            # True when the store holds more observations than one crawl reads:
+            # the list is then incomplete and the console must say so.
+            "index_truncated": bool(
+                getattr(container.trace_store, "sessions_index_truncated", False)
+            ),
         }
 
     @app.get("/v1/sessions/{session_id}")
@@ -1268,8 +1295,7 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     def ui_admin_logout(request: Request):
         session_token = request.cookies.get(_SESSION_COOKIE)
         session = container.sessions.get(session_token)
-        if session is not None:
-            container.sessions.revoke_admin(session_token)  # type: ignore[arg-type]
+        if session is not None and container.sessions.revoke_admin(session_token):  # type: ignore[arg-type]
             container.audit.append(
                 actor=session.principal.username,
                 role=session.principal.role,
@@ -1395,6 +1421,17 @@ def create_audit_app(container: AppContainer) -> FastAPI:
     @app.exception_handler(AuthorizationError)
     def _perm_error(request: Request, exc: AuthorizationError):
         return JSONResponse({"detail": str(exc)}, status_code=403)
+
+    @app.exception_handler(httpx.HTTPError)
+    def _upstream_error(request: Request, exc: httpx.HTTPError):
+        """Langfuse (or another upstream) is unreachable or failing: answer
+        503 with a retry hint instead of an unhandled 500."""
+        logger.warning("upstream request failed: %s %s", request.method, request.url.path)
+        return JSONResponse(
+            {"detail": "会话数据源暂时不可用，请稍后重试。", "retry_after": 30},
+            status_code=503,
+            headers={"Retry-After": "30"},
+        )
 
     # ── SPA（Element Plus 单页控制台）托管 ────────────────────────────
     # 构建产物 frontend/dist 由部署包携带；除保留前缀外的 GET 一律回落
